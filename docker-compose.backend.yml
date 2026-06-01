@@ -1,0 +1,152 @@
+# =============================================================================
+# docker-compose.backend.yml — BACKEND SERVICES
+# =============================================================================
+# กำหนด services ทั้งหมดของ backend stack:
+#   - emqx     : MQTT Broker รับข้อมูล GPS จาก ESP32
+#   - timescaledb : ฐานข้อมูล time-series เก็บ GPS/telemetry
+#   - redis    : Cache layer
+#   - backend  : FastAPI application หลัก
+#
+# ใช้รวมกับ docker-compose.yml เสมอ:
+#   docker compose -f docker-compose.yml -f docker-compose.backend.yml up -d
+# =============================================================================
+
+services:
+
+  # ─── EMQX MQTT Broker ───────────────────────────────────────────────────────
+  # รับข้อมูล GPS/telemetry จาก ESP32-S3 บนรถผ่าน MQTT protocol
+  # fleet-backend subscribe topic เพื่อประมวลผล real-time
+  emqx:
+    image: emqx/emqx:5.3.0
+    environment:
+      # password สำหรับเข้าหน้า admin dashboard ของ EMQX
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD}
+    volumes:
+      # เก็บ session, retained messages, ACL rules
+      - emqx-data:/opt/emqx/data
+      # เก็บ log ของ EMQX
+      - emqx-log:/opt/emqx/log
+    ports:
+      - "1883:1883"   # MQTT protocol (ESP32 ต่อที่นี่)
+      - "8083:8083"   # MQTT over WebSocket (browser ต่อที่นี่)
+      - "8883:8883"   # MQTT over SSL/TLS (secure connection)
+    networks:
+      - backend-net
+    healthcheck:
+      # ตรวจว่า EMQX ทำงานอยู่ไหม ทุก 10 วินาที ลองซ้ำ 5 ครั้ง
+      test: ["CMD", "emqx", "ping"]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+
+  # ─── TimescaleDB ─────────────────────────────────────────────────────────────
+  # PostgreSQL + TimescaleDB extension สำหรับ time-series data
+  # เก็บ: telemetry_raw, trip_logs, scoring_config, update_status
+  timescaledb:
+    image: timescale/timescaledb:2.11.2-pg15
+    environment:
+      # ชื่อ database หลัก
+      POSTGRES_DB:       ${POSTGRES_DB}
+      # username สำหรับ fleet-backend ต่อเข้า DB
+      POSTGRES_USER:     ${POSTGRES_USER}
+      # password — ดึงจาก GitHub Secrets ไม่ hardcode ในไฟล์
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      # เก็บข้อมูล DB ทั้งหมด (ถ้าลบ container ข้อมูลยังอยู่)
+      - timescaledb-data:/var/lib/postgresql/data
+      # เก็บ log ของ PostgreSQL
+      - timescaledb-log:/var/log/postgresql
+    ports:
+      - "5432:5432"
+    networks:
+      - backend-net
+    healthcheck:
+      # ตรวจว่า PostgreSQL รับ connection ได้แล้วหรือยัง
+      test: ["CMD-SHELL", "pg_isready -U telematics"]
+      interval: 10s
+      retries: 10
+      start_period: 30s
+
+  # ─── Redis Cache ─────────────────────────────────────────────────────────────
+  # Cache layer ลด load จาก TimescaleDB
+  # เก็บ: session data, rate limiting, temporary state
+  redis:
+    image: redis:7-alpine
+    # บันทึกข้อมูลลง disk ทุกครั้งที่เปลี่ยนแปลง (ป้องกันข้อมูลหายเมื่อ restart)
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - backend-net
+    healthcheck:
+      # ตรวจว่า Redis ตอบสนอง (ตอบ PONG = ปกติ)
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+
+  # ─── Fleet Backend (FastAPI) ─────────────────────────────────────────────────
+  # REST API หลักของระบบ
+  # endpoints: vehicle location, trip history, driver bonus, scoring config
+  # เชื่อมต่อ: TimescaleDB + Redis + EMQX (MQTT subscriber) + Odoo
+  backend:
+    build: ./fleet-backend
+    environment:
+      # connection string ต่อ TimescaleDB (ใช้ชื่อ service แทน IP)
+      DATABASE_URL:  postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      # connection string ต่อ Redis
+      REDIS_URL:     redis://redis:6379/0
+      # ชื่อ MQTT broker (ใช้ชื่อ service แทน IP)
+      MQTT_BROKER:   emqx
+      # port MQTT (default 1883 ถ้าไม่ได้ตั้งค่า)
+      MQTT_PORT:     ${EMQX_MQTT_PORT:-1883}
+      # secret key สำหรับ JWT / signing
+      SECRET_KEY:    ${SECRET_KEY}
+      # URL ของ Odoo สำหรับ sync ข้อมูล payroll
+      ODOO_URL:      http://odoo:8069
+      ODOO_DB:       ${ODOO_DB_NAME}
+      ODOO_USER:     ${ODOO_ADMIN_USER}
+      ODOO_PASSWORD: ${ODOO_ADMIN_PASSWORD}
+      # ระดับ log (DEBUG/INFO/WARNING/ERROR) default INFO
+      LOG_LEVEL:     ${LOG_LEVEL:-INFO}
+    volumes:
+      # เก็บ log ของ FastAPI
+      - backend-log:/app/logs
+    networks:
+      # เชื่อมต่อ backend services (DB, Redis, MQTT)
+      - backend-net
+      # เชื่อมต่อ Odoo stack (sync payroll data)
+      - odoo-net
+    depends_on:
+      # รอให้ทุก service healthy ก่อน start backend
+      # ป้องกัน backend start แล้ว DB ยังไม่พร้อม
+      timescaledb:
+        condition: service_healthy
+      emqx:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+networks:
+  # ทั้งสอง network เป็น external เพราะสร้างไว้แล้วด้วย docker network create
+  backend-net:
+    external: true
+  odoo-net:
+    external: true
+
+volumes:
+  # ทุก volume เป็น external เพราะสร้างไว้แล้วด้วย docker volume create
+  # ทำแบบนี้เพื่อให้ข้อมูลไม่หายแม้จะลบ compose stack ทิ้ง
+  emqx-data:
+    external: true
+  emqx-log:
+    external: true
+  timescaledb-data:
+    external: true
+  timescaledb-log:
+    external: true
+  redis-data:
+    external: true
+  backend-log:
+    external: true

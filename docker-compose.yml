@@ -1,0 +1,40 @@
+# =============================================================================
+# docker-compose.yml — BASE FILE (ไฟล์หลัก)
+# =============================================================================
+# ใช้ร่วมกับไฟล์อื่นเสมอ เช่น:
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
+#
+# ไฟล์นี้กำหนด:
+#   - Networks กลางที่ทุก service ใช้ร่วมกัน
+#   - Volumes กลางสำหรับเก็บข้อมูล persistent
+# =============================================================================
+
+networks:
+
+  # Network สำหรับ backend stack (emqx, timescaledb, redis, fleet-backend)
+  backend-net:
+    driver: bridge
+
+  # Network สำหรับเชื่อมต่อกับ Odoo stack (fleet-backend เชื่อมข้ามมาด้วย)
+  odoo-net:
+    driver: bridge
+
+volumes:
+
+  # ข้อมูลของ EMQX MQTT Broker (session, retained messages)
+  emqx-data:
+
+  # Log ของ EMQX
+  emqx-log:
+
+  # ข้อมูล TimescaleDB (telemetry_raw, trip_logs, scoring_config ทั้งหมด)
+  timescaledb-data:
+
+  # Log ของ TimescaleDB
+  timescaledb-log:
+
+  # ข้อมูล Redis cache
+  redis-data:
+
+  # Log ของ fleet-backend FastAPI
+  backend-log:

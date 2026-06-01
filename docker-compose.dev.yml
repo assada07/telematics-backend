@@ -1,0 +1,67 @@
+# =============================================================================
+# docker-compose.dev.yml — DEVELOPMENT OVERRIDE
+# =============================================================================
+# ใช้รวมกับ docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Override สำคัญ:
+#   - เพิ่ม -dev ต่อท้ายชื่อ container (ไม่ชนกับ production)
+#   - เปิด port DB ออกนอกสำหรับต่อจาก DBeaver/TablePlus
+#   - เปิด EMQX Dashboard port 18083 สำหรับ debug MQTT
+#   - live mount code + uvicorn --reload สำหรับพัฒนา
+#   - เปิด DEBUG=true แสดง error เต็มๆ
+# =============================================================================
+
+services:
+
+  # ─── EMQX MQTT Broker ───────────────────────────────────────────────────────
+  emqx:
+    container_name: telematics-mqtt-dev
+    # restart ถ้า crash แต่ถ้า stop เองจะไม่ restart
+    restart: unless-stopped
+    ports:
+      - "1883:1883"   # MQTT protocol
+      - "8083:8083"   # MQTT over WebSocket
+      # เปิด EMQX Dashboard สำหรับ dev เท่านั้น (production ปิด)
+      # เข้าได้ที่ http://localhost:18083
+      - "18083:18083"
+
+  # ─── TimescaleDB ─────────────────────────────────────────────────────────────
+  timescaledb:
+    container_name: telematics-db-dev
+    restart: unless-stopped
+    # เปิด port ให้ต่อตรงจากเครื่องได้ (DBeaver, TablePlus, psql)
+    # production ปิด port นี้เพราะ security risk
+    ports:
+      - "5432:5432"
+
+  # ─── Redis Cache ─────────────────────────────────────────────────────────────
+  redis:
+    container_name: telematics-redis-dev
+    restart: unless-stopped
+    # เปิด port สำหรับ debug ด้วย redis-cli จากเครื่อง
+    ports:
+      - "6379:6379"
+
+  # ─── Fleet Backend (FastAPI) ─────────────────────────────────────────────────
+  backend:
+    container_name: telematics-backend-dev
+    restart: unless-stopped
+    build:
+      # build จาก source code โดยตรง (ไม่ใช้ image จาก ghcr.io)
+      context: ./fleet-backend
+      dockerfile: Dockerfile
+    environment:
+      ENVIRONMENT: development
+      # เปิด debug mode แสดง error stack trace เต็มๆ
+      # ห้ามเปิดใน production เด็ดขาด
+      DEBUG: "true"
+    volumes:
+      # live mount — แก้ไขไฟล์บนเครื่องแล้วเห็นผลทันทีโดยไม่ต้อง rebuild
+      - ./fleet-backend:/app
+      - backend-log:/app/logs
+    ports:
+      # เปิด port ให้เรียก API โดยตรงจากเครื่อง (ไม่ต้องผ่าน nginx)
+      - "8000:8000"
+    # uvicorn reload อัตโนมัติเมื่อไฟล์ Python เปลี่ยน
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

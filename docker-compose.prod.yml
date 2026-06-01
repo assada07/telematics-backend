@@ -1,0 +1,78 @@
+# =============================================================================
+# docker-compose.prod.yml — PRODUCTION OVERRIDE
+# =============================================================================
+# ใช้รวมกับ docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Override สำคัญ:
+#   - ใช้ image จาก ghcr.io แทนการ build เอง
+#   - ปิด port ทุกตัวยกเว้น nginx (เข้าผ่าน nginx เท่านั้น)
+#   - restart: always ทุกตัว
+#   - mount /backup สำหรับ pg_dump อัตโนมัติก่อน deploy
+# =============================================================================
+
+services:
+
+  # ─── EMQX MQTT Broker ───────────────────────────────────────────────────────
+  emqx:
+    # ชื่อ container ใน production (ไม่มี -dev ต่อท้าย)
+    container_name: telematics-mqtt
+    # restart ทุกกรณี แม้ Docker daemon restart หรือ reboot เครื่อง
+    restart: always
+
+  # ─── TimescaleDB (ฐานข้อมูล GPS หลัก) ───────────────────────────────────────
+  timescaledb:
+    container_name: telematics-db
+    restart: always
+    volumes:
+      # ข้อมูล DB หลัก
+      - timescaledb-data:/var/lib/postgresql/data
+      # Log ของ PostgreSQL
+      - timescaledb-log:/var/log/postgresql
+      # mount โฟลเดอร์ backup บน server จริง
+      # CD pipeline จะ pg_dump ไฟล์ไว้ที่นี่ก่อน deploy ทุกครั้ง
+      - /backup:/backup
+
+  # ─── Redis Cache ─────────────────────────────────────────────────────────────
+  redis:
+    container_name: telematics-redis
+    restart: always
+
+  # ─── Fleet Backend (FastAPI) ─────────────────────────────────────────────────
+  backend:
+    container_name: telematics-backend
+    restart: always
+    # ดึง image ที่ CD pipeline build และ push ขึ้น ghcr.io มาใช้
+    # ไม่ build เองใน production เพื่อความเร็วและ consistency
+    image: ghcr.io/${GITHUB_REPOSITORY}/telematics-backend:latest
+    environment:
+      ENVIRONMENT: production
+      # ปิด debug mode ห้ามเปิดใน production เพราะจะเห็น internal error
+      DEBUG: "false"
+    # ลบ port ทั้งหมดออก — user ต้องเข้าผ่าน nginx เท่านั้น
+    ports: !reset []
+
+  # ─── Nginx Reverse Proxy ──────────────────────────────────────────────────────
+  # entry point เดียวของระบบ รับ HTTP/HTTPS แล้วกระจายไปยัง backend และ odoo
+  nginx:
+    image: nginx:alpine
+    container_name: telematics-nginx
+    restart: always
+    ports:
+      - "80:80"    # HTTP
+      - "443:443"  # HTTPS
+    volumes:
+      # config ไฟล์ nginx (read-only ป้องกัน container แก้ไข)
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # SSL certificate สำหรับ HTTPS
+      - ./docker/nginx/certs:/etc/nginx/certs:ro
+      # Log ของ nginx
+      - nginx-log:/var/log/nginx
+    networks:
+      - backend-net
+      - odoo-net
+    depends_on:
+      - backend
+
+volumes:
+  nginx-log:
