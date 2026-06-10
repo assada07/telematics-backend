@@ -125,7 +125,7 @@
 #         await conn.close()
 # โค้ดใหม่
 # app/api/routes_config.py
-from fastapi import APIRouter, HTTPException, Security
+from fastapi import APIRouter, HTTPException, Security, Body
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from typing import List
@@ -282,6 +282,119 @@ async def register_device(
             "vehicle_id": body.vehicle_id,
             "message": f"ผูก บอร์ด {body.device_id} กับรถ ID {body.vehicle_id} สำเร็จ"
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await conn.close()
+
+
+# ============================================================
+# GET /api/v1/config/scoring/current — ดู active scoring config
+# ============================================================
+@router.get("/config/scoring/current")
+async def get_current_scoring_config(api_key: str = Security(verify_api_key)):
+    """ดู active scoring config ที่ Backend ใช้อยู่"""
+    conn = await get_db_connection()
+    try:
+        row = await conn.fetchrow(
+            "SELECT * FROM scoring_config_cache WHERE is_active = TRUE LIMIT 1"
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="ไม่พบ config")
+        return dict(row)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await conn.close()
+
+
+# ============================================================
+# POST /api/v1/config/scoring — Odoo push scoring config ใหม่
+# ============================================================
+@router.post("/config/scoring")
+async def update_scoring_config(
+    new_config: dict = Body(...),
+    api_key: str = Security(verify_api_key)
+):
+    """Odoo push scoring config ใหม่ → อัปเดต cache + Event Processor ทันที"""
+    conn = await get_db_connection()
+    try:
+        async with conn.transaction():
+            # 1) บันทึกลง scoring_config (history log)
+            import json
+            config_json = json.dumps(new_config)
+            await conn.execute(
+                "INSERT INTO scoring_config (config_name, config_data, updated_at) "
+                "VALUES ('default', $1, NOW()) "
+                "ON CONFLICT (config_name) DO UPDATE SET config_data = $1, updated_at = NOW()",
+                config_json
+            )
+
+            # 2) อัปเดต scoring_config_cache ที่ GET อ่านจริง (partial update เฉพาะ field ที่ส่งมา)
+            allowed_fields = {
+                "weight_harsh_brake", "weight_harsh_accel", "weight_harsh_corner",
+                "weight_speeding", "weight_idling",
+                "threshold_brake_g", "threshold_accel_g", "threshold_corner_g",
+                "threshold_speed_kmh", "threshold_idle_min",
+                "tier_a_min_score", "tier_b_min_score", "tier_c_min_score",
+                "tier_a_bonus_pct", "tier_b_bonus_pct", "tier_c_bonus_pct", "tier_d_bonus_pct",
+                "pushed_from_odoo_config_id", "pushed_by"
+            }
+            updates = {k: v for k, v in new_config.items() if k in allowed_fields}
+            if updates:
+                set_clause = ", ".join(
+                    f"{col} = ${i+1}" for i, col in enumerate(updates.keys())
+                )
+                values = list(updates.values())
+                await conn.execute(
+                    f"UPDATE scoring_config_cache SET {set_clause}, pushed_at = NOW() "
+                    f"WHERE is_active = TRUE",
+                    *values
+                )
+
+        updated_fields = list(updates.keys()) if updates else []
+        return {
+            "status": "success",
+            "message": "อัปเดตเกณฑ์คะแนนและข้อยกเว้นในระบบสำเร็จ!",
+            "updated_fields": updated_fields
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await conn.close()
+
+
+# ============================================================
+# POST /api/v1/webhook/odoo-sync — Odoo pull trip logs
+# ============================================================
+@router.post("/webhook/odoo-sync")
+async def odoo_sync_webhook(
+    body: dict = Body(...),
+    api_key: str = Security(verify_api_key)
+):
+    """
+    Odoo เรียก endpoint นี้เพื่อดึง trip logs ที่ยังไม่ได้ sync
+    รับ: vehicle_id (optional), limit (default 50, max 200 ตาม FDD)
+    """
+    conn = await get_db_connection()
+    try:
+        vehicle_id = body.get("vehicle_id")
+        limit = min(int(body.get("limit", 50)), 200)  # cap ที่ 200 ตาม FDD
+
+        if vehicle_id:
+            rows = await conn.fetch("""
+                SELECT * FROM trip_logs
+                WHERE vehicle_id = $1 AND synced_to_odoo = FALSE
+                ORDER BY trip_start DESC LIMIT $2
+            """, int(vehicle_id), limit)
+        else:
+            rows = await conn.fetch("""
+                SELECT * FROM trip_logs
+                WHERE synced_to_odoo = FALSE
+                ORDER BY trip_start DESC LIMIT $1
+            """, limit)
+
+        return {"total": len(rows), "trips": [dict(r) for r in rows]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
