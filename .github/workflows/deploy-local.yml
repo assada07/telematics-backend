@@ -21,19 +21,18 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Create Docker networks
+      - name: Create Docker networks and volumes
         run: |
           docker network create backend-net || true
           docker network create odoo-net || true
+          docker volume create emqx-data || true
+          docker volume create emqx-log || true
+          docker volume create timescaledb-data || true
+          docker volume create timescaledb-log || true
+          docker volume create redis-data || true
           docker volume create backend-log || true
       - name: Deploy Backend
         run: |
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.backend.yml up -d
-
-      - name: Deploy Odoo
-        run: |
-          docker compose \
-            -f docker-compose.yml \
-            -f docker-compose.odoo.yml up -d
