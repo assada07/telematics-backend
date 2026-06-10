@@ -1,5 +1,5 @@
 # app/models/telemetry.py
-from sqlalchemy import Column, String, Integer, Float, Boolean, DateTime, text
+from sqlalchemy import Column, String, Integer, BigInteger, SmallInteger, Float, Boolean, DateTime, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -15,7 +15,7 @@ class TelemetryRaw(Base):
     speed     = Column(Float)
     heading   = Column(SmallInteger)
     ignition  = Column(Boolean, default=True, nullable=False)
-    event     = Column(String(30))          # ← ใช้ event แทน harsh_braking
+    event     = Column(String(30))
     event_severity = Column(Float)
 
 class ScoringConfig(Base):
@@ -24,5 +24,5 @@ class ScoringConfig(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     config_name = Column(String(50), unique=True, nullable=False)
-    config_data = Column(JSONB, nullable=False)  # เก็บก้อนอาร์เรย์สูตรตัวแปรและสวิตช์เปิด/ปิด
+    config_data = Column(JSONB, nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=text('NOW()'), onupdate=text('NOW()'))

@@ -5,3 +5,4 @@ sqlalchemy[asyncio]==2.0.36
 aiomqtt==2.3.0
 pydantic-settings==2.5.2
 python-dotenv==1.0.1
+paho-mqtt==2.1.0
