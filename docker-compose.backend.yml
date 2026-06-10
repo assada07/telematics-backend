@@ -27,7 +27,7 @@ services:
       # เก็บ log ของ EMQX
       - emqx-log:/opt/emqx/log
     ports:
-      - "1883:1883"   # MQTT protocol (ESP32 ต่อที่นี่)
+   # MQTT protocol (ESP32 ต่อที่นี่)
       - "8083:8083"   # MQTT over WebSocket (browser ต่อที่นี่)
       - "8883:8883"   # MQTT over SSL/TLS (secure connection)
     networks:
