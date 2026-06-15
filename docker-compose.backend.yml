@@ -2,10 +2,10 @@
 # docker-compose.backend.yml — BACKEND SERVICES
 # =============================================================================
 # กำหนด services ทั้งหมดของ backend stack:
-#   - emqx     : MQTT Broker รับข้อมูล GPS จาก ESP32
+#   - emqx        : MQTT Broker รับข้อมูล GPS จาก ESP32
 #   - timescaledb : ฐานข้อมูล time-series เก็บ GPS/telemetry
-#   - redis    : Cache layer
-#   - backend  : FastAPI application หลัก
+#   - redis       : Cache layer
+#   - backend     : FastAPI application หลัก
 #
 # ใช้รวมกับ docker-compose.yml เสมอ:
 #   docker compose -f docker-compose.yml -f docker-compose.backend.yml up -d
@@ -27,9 +27,10 @@ services:
       # เก็บ log ของ EMQX
       - emqx-log:/opt/emqx/log
     ports:
-   # MQTT protocol (ESP32 ต่อที่นี่)
+      - "1883:1883"   # MQTT protocol (ESP32 ต่อที่นี่)
       - "8083:8083"   # MQTT over WebSocket (browser ต่อที่นี่)
       - "8883:8883"   # MQTT over SSL/TLS (secure connection)
+      - "18083:18083" # EMQX Dashboard (หน้า admin)
     networks:
       - backend-net
     healthcheck:
@@ -62,7 +63,7 @@ services:
       - backend-net
     healthcheck:
       # ตรวจว่า PostgreSQL รับ connection ได้แล้วหรือยัง
-      test: ["CMD-SHELL", "pg_isready -U telematics"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
       retries: 10
       start_period: 30s
@@ -93,26 +94,54 @@ services:
   backend:
     build: ./fleet-backend
     environment:
-      # connection string ต่อ TimescaleDB (ใช้ชื่อ service แทน IP)
-      DATABASE_URL:  postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
-      # connection string ต่อ Redis
-      REDIS_URL:     redis://redis:6379/0
-      # ชื่อ MQTT broker (ใช้ชื่อ service แทน IP)
-      MQTT_BROKER:   emqx
-      # port MQTT (default 1883 ถ้าไม่ได้ตั้งค่า)
-      MQTT_PORT:     ${EMQX_MQTT_PORT:-1883}
-      # secret key สำหรับ JWT / signing
-      SECRET_KEY:    ${SECRET_KEY}
-      # URL ของ Odoo สำหรับ sync ข้อมูล payroll
+      # ── Database (TimescaleDB) ──────────────────────────────────────────────
+      # ชื่อ host ของ DB ใช้ชื่อ service แทน IP (Docker จัดการ DNS เอง)
+      DB_HOST:      timescaledb
+      # port ของ PostgreSQL (default 5432)
+      DB_PORT:      5432
+      # ชื่อ database ที่ backend จะใช้
+      DB_NAME:      ${POSTGRES_DB}
+      # username สำหรับต่อ DB
+      DB_USER:      ${POSTGRES_USER}
+      # password สำหรับต่อ DB
+      DB_PASS:      ${POSTGRES_PASSWORD}
+      # connection string เต็มสำหรับ SQLAlchemy / migrations
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+
+      # ── Redis ───────────────────────────────────────────────────────────────
+      # connection string ต่อ Redis สำหรับ cache และ rate limiting
+      REDIS_URL:    redis://redis:6379/0
+
+      # ── MQTT (EMQX) ─────────────────────────────────────────────────────────
+      # ชื่อ host ของ MQTT broker ใช้ชื่อ service แทน IP
+      MQTT_HOST:    emqx
+      # port MQTT standard (1883 = ไม่เข้ารหัส)
+      MQTT_PORT:    1883
+      # topic ที่ backend จะ subscribe (#  = ทุก topic)
+      MQTT_TOPIC:   "#"
+
+      # ── Security ────────────────────────────────────────────────────────────
+      # secret key สำหรับ JWT token signing
+      SECRET_KEY:   ${SECRET_KEY}
+
+      # ── Odoo Integration ────────────────────────────────────────────────────
+      # URL ของ Odoo สำหรับ sync ข้อมูล payroll และโบนัส
       ODOO_URL:      http://odoo:8069
+      # ชื่อ database ของ Odoo
       ODOO_DB:       ${ODOO_DB_NAME}
+      # username admin ของ Odoo
       ODOO_USER:     ${ODOO_ADMIN_USER}
+      # password admin ของ Odoo
       ODOO_PASSWORD: ${ODOO_ADMIN_PASSWORD}
+
+      # ── Logging ─────────────────────────────────────────────────────────────
       # ระดับ log (DEBUG/INFO/WARNING/ERROR) default INFO
-      LOG_LEVEL:     ${LOG_LEVEL:-INFO}
+      LOG_LEVEL:    ${LOG_LEVEL:-INFO}
     volumes:
       # เก็บ log ของ FastAPI
       - backend-log:/app/logs
+    ports:
+      - "8000:8000"
     networks:
       # เชื่อมต่อ backend services (DB, Redis, MQTT)
       - backend-net
@@ -136,8 +165,7 @@ networks:
     external: true
 
 volumes:
-  # ทุก volume เป็น external เพราะสร้างไว้แล้วด้วย docker volume create
-  # ทำแบบนี้เพื่อให้ข้อมูลไม่หายแม้จะลบ compose stack ทิ้ง
+  # ทุก volume เป็น external ป้องกันข้อมูลหายเมื่อลบ compose stack
   emqx-data:
     external: true
   emqx-log:
