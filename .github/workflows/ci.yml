@@ -44,7 +44,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt flake8 pytest pytest-cov
       - name: Lint
-        run: flake8 . --max-line-length=120 --ignore=E221,W291,W292,W293,E302,E305,E501,F401,F821,E265,F841,E122,E272,E241,W504,W503
+        run: flake8 . --max-line-length=120 --exclude=venv,__pycache__,.git --ignore=E221,W291,W292,W293,E302,E305,E501,F401,F821,E265,F841,E122,E272,E241,W504,W503
+        
       - name: Run Tests
         env:
           DATABASE_URL: postgresql://telematics:testpassword@localhost:5432/telematics_test
