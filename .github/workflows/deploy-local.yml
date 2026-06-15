@@ -1,11 +1,13 @@
 name: Deploy Local
-
 on:
-  push:
+  workflow_run:
+    workflows: ["CI Pipeline"]
     branches: [main, develop]
-
+    types:
+      - completed
 jobs:
   deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: self-hosted
     env:
       POSTGRES_DB:              ${{ secrets.POSTGRES_DB }}
@@ -18,7 +20,6 @@ jobs:
       ODOO_ADMIN_PASSWORD:      ${{ secrets.ODOO_ADMIN_PASSWORD }}
       EMQX_DASHBOARD_PASSWORD:  ${{ secrets.EMQX_DASHBOARD_PASSWORD }}
       SECRET_KEY:               ${{ secrets.SECRET_KEY }}
-
     steps:
       - uses: actions/checkout@v4
       - name: Create Docker networks and volumes
@@ -35,4 +36,5 @@ jobs:
         run: |
           docker compose \
             -f docker-compose.yml \
-            -f docker-compose.backend.yml up -d
+            -f docker-compose.backend.yml \
+            up -d --build --remove-orphans
