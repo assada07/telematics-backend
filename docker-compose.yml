@@ -9,32 +9,16 @@
 #   - Volumes กลางสำหรับเก็บข้อมูล persistent
 # =============================================================================
 
+services:
+  backend:
+    build: .
+    container_name: backend
+    restart: always
+    ports:
+      - "8000:8000"   # optional (dev)
+    networks:
+      - telematics-net
+
 networks:
-
-  # Network สำหรับ backend stack (emqx, timescaledb, redis, fleet-backend)
-  backend-net:
-    driver: bridge
-
-  # Network สำหรับเชื่อมต่อกับ Odoo stack (fleet-backend เชื่อมข้ามมาด้วย)
-  odoo-net:
-    driver: bridge
-
-volumes:
-
-  # ข้อมูลของ EMQX MQTT Broker (session, retained messages)
-  emqx-data:
-
-  # Log ของ EMQX
-  emqx-log:
-
-  # ข้อมูล TimescaleDB (telemetry_raw, trip_logs, scoring_config ทั้งหมด)
-  timescaledb-data:
-
-  # Log ของ TimescaleDB
-  timescaledb-log:
-
-  # ข้อมูล Redis cache
-  redis-data:
-
-  # Log ของ fleet-backend FastAPI
-  backend-log:
+  telematics-net:
+    external: true
