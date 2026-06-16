@@ -57,6 +57,8 @@ services:
       - timescaledb-data:/var/lib/postgresql/data
       # เก็บ log ของ PostgreSQL
       - timescaledb-log:/var/log/postgresql
+      # init script สร้าง user และ database อัตโนมัติ
+      - ./docker/timescaledb/init:/docker-entrypoint-initdb.d
     ports:
       - "5432:5432"
     networks:
