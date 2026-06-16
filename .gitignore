@@ -9,3 +9,5 @@ __pycache__/
 logs/
 logs/*.log
 fleet-backend/venv/
+.env
+fleet-backend/.env
