@@ -99,6 +99,14 @@ from app.services.mqtt_subscriber import (
     mqtt_subscriber_task,
 )
 
+from app.api import routes_vehicles
+from app.api import routes_trips
+from app.api import routes_drivers
+from app.api import routes_config
+from app.api import routes_reports
+
+from app.auth.routes import router as auth_router
+
 # ──────────────────────────────────────────────
 # Windows Compatibility
 # ──────────────────────────────────────────────
@@ -117,14 +125,6 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────
 # Routers
 # ──────────────────────────────────────────────
-
-from app.api import routes_vehicles
-from app.api import routes_trips
-from app.api import routes_drivers
-from app.api import routes_config
-from app.api import routes_reports
-
-from app.auth.routes import router as auth_router
 
 # ──────────────────────────────────────────────
 # Lifespan

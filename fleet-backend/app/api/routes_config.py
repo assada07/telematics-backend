@@ -11,8 +11,6 @@ Handles:
 - Scoring config (push from Odoo)
 """
 
-from unittest import result
-
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 import asyncpg
@@ -333,8 +331,8 @@ async def register_device_single(
     
     try:
         async with pool.acquire() as conn:
-            result = await _register_single(conn, request)
-            return result
+            register_result = await _register_single(conn, request)
+            return register_result
             
     except HTTPException:
         raise
@@ -389,8 +387,8 @@ async def register_device_batch(
                 
                 for item in request.devices:
                     try:
-                        result = await _register_single(conn, item)
-                        results.append(result)
+                        batch_item_result = await _register_single(conn, item)
+                        results.append(batch_item_result)
                         
                     except HTTPException as e:
                         # Re-raise to trigger rollback
@@ -406,7 +404,6 @@ async def register_device_batch(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 # ─────────────────────────────────────────────────────────────
@@ -481,7 +478,7 @@ async def update_vehicle_config(
 
                 if actual_old_device:
                     # ── 4a. Migrate trip_logs: อัปเดต vehicle_id ให้ถูก ──
-                    result = await conn.execute(
+                    migrate_result = await conn.execute(
                         """
                         UPDATE trip_logs
                         SET vehicle_id = $1
@@ -491,7 +488,7 @@ async def update_vehicle_config(
                         vehicle_id, actual_old_device
                     )
                     try:
-                        migrated_trips = int(result.split()[-1])
+                        migrated_trips = int(migrate_result.split()[-1])
                     except Exception:
                         migrated_trips = 0
 
