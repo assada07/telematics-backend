@@ -1,24 +1,23 @@
 # =============================================================================
 # docker-compose.yml — BASE FILE (ไฟล์หลัก)
 # =============================================================================
-# ใช้ร่วมกับไฟล์อื่นเสมอ เช่น:
-#   docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
-#
-# ไฟล์นี้กำหนด:
-#   - Networks กลางที่ทุก service ใช้ร่วมกัน
-#   - Volumes กลางสำหรับเก็บข้อมูล persistent
-# =============================================================================
-
-services:
-  backend:
-    build: .
-    container_name: backend
-    restart: always
-    ports:
-      - "8000:8000"   # optional (dev)
-    networks:
-      - telematics-net
 
 networks:
-  telematics-net:
+  backend-net:
+    external: true
+  odoo-net:
+    external: true
+
+volumes:
+  emqx-data:
+    external: true
+  emqx-log:
+    external: true
+  timescaledb-data:
+    external: true
+  timescaledb-log:
+    external: true
+  redis-data:
+    external: true
+  backend-log:
     external: true
