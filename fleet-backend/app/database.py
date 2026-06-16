@@ -1,6 +1,3 @@
-
-
-
 # app/database.py
 
 """

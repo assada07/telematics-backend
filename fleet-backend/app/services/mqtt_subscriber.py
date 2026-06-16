@@ -389,8 +389,6 @@ def on_message(client, userdata, msg):
     วิธีถูกต้อง: ใช้ asyncio.run_coroutine_threadsafe(coro, loop)
     โดย _loop คือ event loop ของ FastAPI ที่บันทึกไว้ตอน startup
     """
-    global _loop
-
     # ── Guard: ต้องมี loop พร้อมก่อน ──────────────────────────
     if _loop is None or not _loop.is_running():
         logger.warning("[MQTT] Event loop not ready — message dropped")
