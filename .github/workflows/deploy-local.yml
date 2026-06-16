@@ -5,11 +5,13 @@ on:
     branches: [main, develop]
     types:
       - completed
+
 jobs:
   deploy:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: self-hosted
     env:
+      # ดึงค่า Secrets ชุดใหญ่ (สำหรับตัวนอก)
       POSTGRES_DB:              ${{ secrets.POSTGRES_DB }}
       POSTGRES_USER:            ${{ secrets.POSTGRES_USER }}
       POSTGRES_PASSWORD:        ${{ secrets.POSTGRES_PASSWORD }}
@@ -20,8 +22,36 @@ jobs:
       ODOO_ADMIN_PASSWORD:      ${{ secrets.ODOO_ADMIN_PASSWORD }}
       EMQX_DASHBOARD_PASSWORD:  ${{ secrets.EMQX_DASHBOARD_PASSWORD }}
       SECRET_KEY:               ${{ secrets.SECRET_KEY }}
+      
     steps:
       - uses: actions/checkout@v4
+
+      # 💡 สเต็ปเสริม 1: สร้างไฟล์ .env สำหรับโปรเจกต์ตัวนอกสุด (Infrastructure)
+      - name: Create Global .env File
+        run: |
+          echo "POSTGRES_DB=${{ secrets.POSTGRES_DB }}" > .env
+          echo "POSTGRES_USER=${{ secrets.POSTGRES_USER }}" >> .env
+          echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> .env
+          echo "EMQX_DASHBOARD_PASSWORD=${{ secrets.EMQX_DASHBOARD_PASSWORD }}" >> .env
+          echo "SECRET_KEY=${{ secrets.SECRET_KEY }}" >> .env
+          echo "ODOO_DB_NAME=${{ secrets.ODOO_DB_NAME }}" >> .env
+          echo "ODOO_ADMIN_USER=${{ secrets.ODOO_ADMIN_USER }}" >> .env
+          echo "ODOO_ADMIN_PASSWORD=${{ secrets.ODOO_ADMIN_PASSWORD }}" >> .env
+
+      # 💡 สเต็ปเสริม 2: สร้างไฟล์ .env สำหรับโปรเจกต์ตัวใน (fleet-backend) บังคับให้หาเจอ 100%
+      # โดยใช้สิทธิ์ผู้ใช้และรหัสผ่านจากที่แมพกับฐานข้อมูล พร้อมกับพอร์ตเครื่องนอก (5434)
+      - name: Create Fleet Backend .env File
+        run: |
+          cd fleet-backend
+          echo "DB_HOST=127.0.0.1" > .env
+          echo "DB_PORT=5434" >> .env
+          echo "DB_NAME=${{ secrets.POSTGRES_DB }}" >> .env
+          echo "DB_USER=${{ secrets.POSTGRES_USER }}" >> .env
+          echo "DB_PASS=${{ secrets.POSTGRES_PASSWORD }}" >> .env
+          echo "MQTT_HOST=127.0.0.1" >> .env
+          echo "MQTT_PORT=1883" >> .env
+          echo "MQTT_TOPIC=kotchasaan/fleet/#" >> .env
+
       - name: Create Docker networks and volumes
         run: |
           docker network create backend-net || true
@@ -32,8 +62,17 @@ jobs:
           docker volume create timescaledb-log || true
           docker volume create redis-data || true
           docker volume create backend-log || true
-      - name: Deploy Backend
+
+      # 💡 ปรับปรุงสเต็ป Deploy: สั่ง Down เพื่อเคลียร์สถานะค้างเก่าก่อนอัปเกรดแบบสะอาด
+      - name: Deploy Infrastructure and Backend
         run: |
+          # 1. ล้างกระบวนการเก่าเพื่อป้องกันรหัสผ่านค้างใน Volume เดิม
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.backend.yml \
+            down -v || true
+          
+          # 2. สั่งเปิดใช้งานระบบทั้งหมดขึ้นมาใหม่แบบคลีนๆ
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.backend.yml \
