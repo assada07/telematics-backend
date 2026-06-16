@@ -56,11 +56,16 @@ from app.config import settings
 
 router = APIRouter(prefix="/trips", tags=["Trips & Scoring"])
 
+
 async def get_db_connection():
     return await asyncpg.connect(
-        user=settings.DB_USER, password=settings.DB_PASS,
-        database=settings.DB_NAME, host=settings.DB_HOST, port=settings.DB_PORT
+        user=settings.DB_USER,
+        password=settings.DB_PASS,
+        database=settings.DB_NAME,
+        host=settings.DB_HOST,
+        port=settings.DB_PORT,
     )
+
 
 # ============================================================
 # GET /trips/{trip_id} — รายละเอียด trip + GPS track
@@ -75,12 +80,17 @@ async def get_trip_detail(trip_id: int):
             raise HTTPException(status_code=404, detail="ไม่พบทริปนี้")
 
         # ดึง GPS track จาก telemetry_raw
-        track = await conn.fetch("""
+        track = await conn.fetch(
+            """
             SELECT ts, lat, lon, speed, heading, event
             FROM telemetry_raw
             WHERE device_id = $1 AND ts BETWEEN $2 AND $3
             ORDER BY ts ASC
-        """, row["device_id"], row["trip_start"], row["trip_end"])
+        """,
+            row["device_id"],
+            row["trip_start"],
+            row["trip_end"],
+        )
 
         await conn.close()
         result = dict(row)
@@ -88,6 +98,7 @@ async def get_trip_detail(trip_id: int):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # ============================================================
 # PATCH /trips/{trip_id}/mark-synced — mark synced_to_odoo

@@ -3,6 +3,7 @@
 Integration-style tests สำหรับ Fleet Telematics API
 ใช้ TestClient + AsyncMock แทน DB จริง ทำให้รันได้โดยไม่ต้องต่อ TimescaleDB
 """
+
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
@@ -12,16 +13,16 @@ from fastapi.testclient import TestClient
 import sys
 
 mock_settings = MagicMock()
-mock_settings.DB_USER     = "test_user"
-mock_settings.DB_PASS     = "test_pass"
-mock_settings.DB_NAME     = "test_db"
-mock_settings.DB_HOST     = "localhost"
-mock_settings.DB_PORT     = 5432
-mock_settings.MQTT_HOST   = "localhost"
-mock_settings.MQTT_PORT   = 1883
-mock_settings.MQTT_USER   = "admin"
-mock_settings.MQTT_PASS   = "public"
-mock_settings.MQTT_TOPIC  = "fleet/#"
+mock_settings.DB_USER = "test_user"
+mock_settings.DB_PASS = "test_pass"
+mock_settings.DB_NAME = "test_db"
+mock_settings.DB_HOST = "localhost"
+mock_settings.DB_PORT = 5432
+mock_settings.MQTT_HOST = "localhost"
+mock_settings.MQTT_PORT = 1883
+mock_settings.MQTT_USER = "admin"
+mock_settings.MQTT_PASS = "public"
+mock_settings.MQTT_TOPIC = "fleet/#"
 mock_settings.HMAC_SECRET = "test_secret"
 
 sys.modules["app.config"] = MagicMock(settings=mock_settings)
@@ -34,7 +35,7 @@ from app.main import app  # noqa: E402
 client = TestClient(app)
 
 VALID_API_KEY = "ktc-fleet-2026-secret"
-HEADERS       = {"APIKEY": VALID_API_KEY}
+HEADERS = {"APIKEY": VALID_API_KEY}
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -45,31 +46,41 @@ def make_record(**kwargs):
     record = MagicMock()
     record.__getitem__ = lambda self, key: kwargs[key]
     record.__contains__ = lambda self, key: key in kwargs
-    record.keys         = lambda: kwargs.keys()
+    record.keys = lambda: kwargs.keys()
     # ทำให้ dict(record) ทำงานได้
-    record.__iter__     = lambda self: iter(kwargs)
+    record.__iter__ = lambda self: iter(kwargs)
     return record
 
 
 def make_trip_record(**kwargs):
     """asyncpg record สำหรับ trip_logs"""
     defaults = {
-        "id": 1, "device_id": "DEV001", "vehicle_id": 1, "driver_id": 1,
+        "id": 1,
+        "device_id": "DEV001",
+        "vehicle_id": 1,
+        "driver_id": 1,
         "trip_start": "2026-01-01T08:00:00+07:00",
-        "trip_end":   "2026-01-01T09:00:00+07:00",
-        "distance_km": 45.2, "duration_min": 60.0, "idle_min": 5.0,
-        "max_speed": 110.0, "avg_speed": 72.0,
-        "harsh_brake_count": 1, "harsh_accel_count": 0,
-        "harsh_corner_count": 2, "speeding_count": 1,
-        "driver_score": 88.5, "fuel_used": 4.2,
-        "gps_track": None, "synced_to_odoo": False,
+        "trip_end": "2026-01-01T09:00:00+07:00",
+        "distance_km": 45.2,
+        "duration_min": 60.0,
+        "idle_min": 5.0,
+        "max_speed": 110.0,
+        "avg_speed": 72.0,
+        "harsh_brake_count": 1,
+        "harsh_accel_count": 0,
+        "harsh_corner_count": 2,
+        "speeding_count": 1,
+        "driver_score": 88.5,
+        "fuel_used": 4.2,
+        "gps_track": None,
+        "synced_to_odoo": False,
         "created_at": "2026-01-01T09:00:01+07:00",
     }
     defaults.update(kwargs)
     r = MagicMock()
     r.__getitem__ = lambda self, k: defaults[k]
-    r.keys        = lambda: defaults.keys()
-    r.__iter__    = lambda self: iter(defaults)
+    r.keys = lambda: defaults.keys()
+    r.__iter__ = lambda self: iter(defaults)
     return r
 
 
@@ -95,7 +106,8 @@ class TestVehicleAuth:
         assert res.status_code == 403
 
     def test_wrong_api_key_returns_403(self):
-        res = client.get("/api/v1/vehicles/1/location", headers={"APIKEY": "wrong-key"})
+        res = client.get("/api/v1/vehicles/1/location",
+                         headers={"APIKEY": "wrong-key"})
         assert res.status_code == 403
 
     def test_no_api_key_on_trips_returns_403(self):
@@ -114,24 +126,27 @@ class TestVehicleLocation:
         mock_conn = AsyncMock()
         mock_conn_fn.return_value = mock_conn
         mock_conn.fetchrow.side_effect = [
-            make_record(device_id="DEV001"),          # update_status
-            make_record(                               # telemetry_raw
+            make_record(device_id="DEV001"),  # update_status
+            make_record(  # telemetry_raw
                 ts="2026-01-01T10:00:00+07:00",
-                lat=18.796143, lon=98.979263,
-                speed=60.5, heading=90,
-                ignition=True, event=None,
+                lat=18.796143,
+                lon=98.979263,
+                speed=60.5,
+                heading=90,
+                ignition=True,
+                event=None,
             ),
         ]
         res = client.get("/api/v1/vehicles/1/location", headers=HEADERS)
         assert res.status_code == 200
         data = res.json()
         assert data["vehicle_id"] == 1
-        assert data["device_id"]  == "DEV001"
-        assert data["lat"]        == 18.796143
-        assert data["lon"]        == 98.979263
-        assert data["speed"]      == 60.5
-        assert data["ignition"]   is True
-        assert data["event"]      is None
+        assert data["device_id"] == "DEV001"
+        assert data["lat"] == 18.796143
+        assert data["lon"] == 98.979263
+        assert data["speed"] == 60.5
+        assert data["ignition"] is True
+        assert data["event"] is None
 
     @patch("app.api.routes_vehicles.get_db_connection")
     def test_get_location_vehicle_not_found(self, mock_conn_fn):
@@ -150,7 +165,7 @@ class TestVehicleLocation:
         mock_conn_fn.return_value = mock_conn
         mock_conn.fetchrow.side_effect = [
             make_record(device_id="DEV002"),  # update_status พบ
-            None,                              # telemetry_raw ว่าง
+            None,  # telemetry_raw ว่าง
         ]
         res = client.get("/api/v1/vehicles/2/location", headers=HEADERS)
         assert res.status_code == 404
@@ -165,9 +180,12 @@ class TestVehicleLocation:
             make_record(device_id="DEV003"),
             make_record(
                 ts="2026-01-01T11:00:00+07:00",
-                lat=13.75, lon=100.52,
-                speed=95.0, heading=180,
-                ignition=True, event="harsh_brake",
+                lat=13.75,
+                lon=100.52,
+                speed=95.0,
+                heading=180,
+                ignition=True,
+                event="harsh_brake",
             ),
         ]
         res = client.get("/api/v1/vehicles/3/location", headers=HEADERS)
@@ -224,17 +242,17 @@ class TestDriverBonus:
         mock_connect.return_value = mock_conn
         mock_conn.fetch.return_value = [
             make_record(driver_score=90.0),
-            make_record(driver_score=70.0),   # ไม่ผ่านเกณฑ์
+            make_record(driver_score=70.0),  # ไม่ผ่านเกณฑ์
             make_record(driver_score=88.0),
         ]
         res = client.get("/drivers/D001/bonus")
         assert res.status_code == 200
         data = res.json()
-        assert data["driver_id"]                  == "D001"
-        assert data["safe_trips_count"]            == 2
+        assert data["driver_id"] == "D001"
+        assert data["safe_trips_count"] == 2
         assert data["accumulated_incentive_bonus"] == 100.0
-        assert data["currency"]                    == "THB"
-        assert data["odoo_integration_ready"]      is True
+        assert data["currency"] == "THB"
+        assert data["odoo_integration_ready"] is True
 
     @patch("app.api.routes_drivers.asyncpg.connect")
     def test_bonus_no_qualified_trips(self, mock_connect):
@@ -248,7 +266,7 @@ class TestDriverBonus:
         res = client.get("/drivers/D002/bonus")
         assert res.status_code == 200
         data = res.json()
-        assert data["safe_trips_count"]            == 0
+        assert data["safe_trips_count"] == 0
         assert data["accumulated_incentive_bonus"] == 0.0
 
     @patch("app.api.routes_drivers.asyncpg.connect")
@@ -260,11 +278,11 @@ class TestDriverBonus:
             make_record(driver_score=95.0),
             make_record(driver_score=87.0),
             make_record(driver_score=99.0),
-            make_record(driver_score=85.0),   # ขอบเกณฑ์พอดี
+            make_record(driver_score=85.0),  # ขอบเกณฑ์พอดี
         ]
         res = client.get("/drivers/D003/bonus")
         assert res.status_code == 200
-        assert res.json()["safe_trips_count"]            == 4
+        assert res.json()["safe_trips_count"] == 4
         assert res.json()["accumulated_incentive_bonus"] == 200.0
 
     @patch("app.api.routes_drivers.asyncpg.connect")
@@ -275,7 +293,7 @@ class TestDriverBonus:
         mock_conn.fetch.return_value = []
         res = client.get("/drivers/D999/bonus")
         assert res.status_code == 200
-        assert res.json()["safe_trips_count"]            == 0
+        assert res.json()["safe_trips_count"] == 0
         assert res.json()["accumulated_incentive_bonus"] == 0.0
 
     @patch("app.api.routes_drivers.asyncpg.connect")
@@ -302,7 +320,9 @@ class TestScoringConfig:
         mock_conn = AsyncMock()
         mock_conn_fn.return_value = mock_conn
         mock_conn.fetchrow.return_value = make_record(
-            id=1, config_name="default", is_active=True,
+            id=1,
+            config_name="default",
+            is_active=True,
             config_data='{"speed_limit": 90}',
             updated_at="2026-01-01T00:00:00+07:00",
         )
@@ -310,7 +330,7 @@ class TestScoringConfig:
         assert res.status_code == 200
         data = res.json()
         assert data["config_name"] == "default"
-        assert data["is_active"]   is True
+        assert data["is_active"] is True
 
     @patch("app.api.routes_trips.get_db_connection")
     def test_get_config_not_found(self, mock_conn_fn):
@@ -336,7 +356,7 @@ class TestScoringConfig:
         res = client.post("/trips/scoring/config", json=payload)
         assert res.status_code == 200
         data = res.json()
-        assert data["status"]  == "success"
+        assert data["status"] == "success"
         assert "อัปเดต" in data["message"]
 
     @patch("app.api.routes_trips.get_db_connection")

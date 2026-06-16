@@ -1,6 +1,7 @@
 # app/config.py
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     # Database Settings (TimescaleDB)
     DB_HOST: str
@@ -12,7 +13,7 @@ class Settings(BaseSettings):
     # MQTT Broker Settings
     MQTT_HOST: str
     MQTT_PORT: int
-    MQTT_USER: str = "admin"   # ค่า Default ของ EMQX
+    MQTT_USER: str = "admin"  # ค่า Default ของ EMQX
     MQTT_PASS: str = "public"  # ค่า Default ของ EMQX
     MQTT_TOPIC: str
 
@@ -21,5 +22,6 @@ class Settings(BaseSettings):
 
     # โดดค่าจากไฟล์ .env โดยอัตโนมัติ
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
 
 settings = Settings()

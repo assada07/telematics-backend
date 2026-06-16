@@ -59,7 +59,8 @@ from app.api import routes_vehicles
 from app.api import routes_trips
 from app.api import routes_drivers
 from app.api import routes_config
-from app.api import routes_reports     # ← ใหม่
+from app.api import routes_reports  # ← ใหม่
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -72,10 +73,11 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         print("🛑 หยุดการทำงานระบบดักฟังเรียบร้อย (Gracefully Stopped)")
 
+
 app = FastAPI(
     title="Kotchasaan Enterprise Fleet Telematics API",
     version="2.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Static files (API Tester UI)
@@ -84,9 +86,11 @@ try:
 except Exception:
     pass
 
+
 @app.get("/tester", include_in_schema=False)
 async def api_tester():
     return FileResponse("static/fleet_api_tester.html")
+
 
 # Routers
 app.include_router(routes_vehicles.router)
@@ -94,7 +98,8 @@ app.include_router(routes_vehicles.fleet_router)  # SSE /fleet/live
 app.include_router(routes_trips.router)
 app.include_router(routes_drivers.router)
 app.include_router(routes_config.router)
-app.include_router(routes_reports.router)          # ← ใหม่
+app.include_router(routes_reports.router)  # ← ใหม่
+
 
 @app.get("/")
 async def root():
@@ -104,5 +109,5 @@ async def root():
         "compliance": "FDD v1.4 Full",
         "version": "2.0.0",
         "tester_ui": "/tester",
-        "docs": "/docs"
+        "docs": "/docs",
     }

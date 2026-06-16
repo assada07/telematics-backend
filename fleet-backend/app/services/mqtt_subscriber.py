@@ -27,7 +27,7 @@ def verify_hmac(payload_str: str, secret_key: str) -> bool:
 
         received_sig = payload_dict["sig"]
 
-        target_str = ',\"sig\":\"' + received_sig + '\"}'
+        target_str = ',"sig":"' + received_sig + '"}'
         if target_str not in payload_str:
             logger.warning("❌ ไม่พบรูปแบบ sig ใน payload string")
             return False
@@ -40,7 +40,8 @@ def verify_hmac(payload_str: str, secret_key: str) -> bool:
             hashlib.sha256,
         ).hexdigest()
 
-        is_valid = hmac.compare_digest(received_sig.lower(), expected_hmac.lower())
+        is_valid = hmac.compare_digest(
+            received_sig.lower(), expected_hmac.lower())
         if is_valid:
             logger.info("✅ HMAC ผ่าน")
         else:
@@ -86,20 +87,28 @@ async def save_to_timescaledb(pool: asyncpg.Pool, data: dict):
                 data.get("coolant_temp"),
                 data.get("fuel_level"),
                 data.get("maf"),
-                data.get("ax"), data.get("ay"), data.get("az"),
-                data.get("gx"), data.get("gy"), data.get("gz"),
+                data.get("ax"),
+                data.get("ay"),
+                data.get("az"),
+                data.get("gx"),
+                data.get("gy"),
+                data.get("gz"),
                 data.get("event", ""),
                 data.get("event_severity", 0.0),
                 data.get("ignition", True),
             )
-            logger.info(f"💾 บันทึก {data.get('device_id')} @ ts={data.get('ts')}")
+            logger.info(
+                f"💾 บันทึก {data.get('device_id')} @ ts={data.get('ts')}")
 
             # 2. Auto-register device ถ้ายังไม่มีใน devices table
-            await conn.execute("""
+            await conn.execute(
+                """
                 INSERT INTO devices (id, active)
                 VALUES ($1, true)
                 ON CONFLICT (id) DO NOTHING
-            """, data.get("device_id"))
+            """,
+                data.get("device_id"),
+            )
 
     except Exception as e:
         logger.error(f"❌ DB insert error: {e}")
@@ -143,11 +152,10 @@ async def mqtt_subscriber_task():
                         await save_to_timescaledb(db_pool, payload)
 
                         # 3. Trip boundary detection
-                        device_id    = payload.get("device_id")
-                        ignition     = payload.get("ignition", True)
+                        device_id = payload.get("device_id")
+                        ignition = payload.get("ignition", True)
                         current_time = datetime.datetime.fromtimestamp(
-                            payload.get("ts"),
-                            tz=datetime.timezone.utc
+                            payload.get("ts"), tz=datetime.timezone.utc
                         )
 
                         if device_id not in ACTIVE_VEHICLE_TRIPS:
@@ -173,7 +181,9 @@ async def mqtt_subscriber_task():
                                 "is_running": False,
                                 "start_time": None,
                             }
-                            logger.info(f"🏁 [Trip End] {device_id} — กำลังคำนวณคะแนน...")
+                            logger.info(
+                                f"🏁 [Trip End] {device_id} — กำลังคำนวณคะแนน..."
+                            )
 
                             asyncio.create_task(
                                 process_and_save_trip_summary(
@@ -187,7 +197,8 @@ async def mqtt_subscriber_task():
                     except json.JSONDecodeError:
                         logger.error("❌ JSON ผิดรูปแบบ")
                     except Exception as e:
-                        logger.error(f"❌ Message processing error: {e}", exc_info=True)
+                        logger.error(
+                            f"❌ Message processing error: {e}", exc_info=True)
 
         except MqttError as e:
             logger.error(f"⚠️ MQTT หลุด: {e} — retry ใน 5s")

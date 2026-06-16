@@ -14,27 +14,27 @@ def calculate_advanced_trip_score(
     if not telemetry_data:
         return {"safety_score": config.get("score_base", 100.0), "metrics": {}}
 
-    score              = config.get("score_base",          100.0)
-    overspeed_limit    = config.get("speeding_kmh_over",    90.0)
-    overspeed_deduct   = config.get("speeding_deduct",       5.0)
-    brake_deduct       = config.get("harsh_brake_deduct",    3.0)
-    accel_deduct       = config.get("harsh_accel_deduct",    3.0)
-    corner_deduct      = config.get("harsh_corner_deduct",   2.0)
-    idle_deduct_pm     = config.get("idling_deduct",         1.0)
-    max_idle_allowed   = config.get("idle_min_threshold",    5.0)
-    max_deduct         = config.get("max_deduct_per_trip", 100.0)
-    night_multiplier   = config.get("night_danger_zone_multiplier", 1.5)
+    score = config.get("score_base", 100.0)
+    overspeed_limit = config.get("speeding_kmh_over", 90.0)
+    overspeed_deduct = config.get("speeding_deduct", 5.0)
+    brake_deduct = config.get("harsh_brake_deduct", 3.0)
+    accel_deduct = config.get("harsh_accel_deduct", 3.0)
+    corner_deduct = config.get("harsh_corner_deduct", 2.0)
+    idle_deduct_pm = config.get("idling_deduct", 1.0)
+    max_idle_allowed = config.get("idle_min_threshold", 5.0)
+    max_deduct = config.get("max_deduct_per_trip", 100.0)
+    night_multiplier = config.get("night_danger_zone_multiplier", 1.5)
 
-    overspeed_count    = 0
-    harsh_brake_count  = 0
-    harsh_accel_count  = 0
+    overspeed_count = 0
+    harsh_brake_count = 0
+    harsh_accel_count = 0
     harsh_corner_count = 0
-    max_speed          = 0.0
+    max_speed = 0.0
 
     for point in telemetry_data:
         speed = float(point.get("speed") or 0.0)
-        ts    = point.get("ts")
-        lat   = float(point.get("lat")   or 0.0)
+        ts = point.get("ts")
+        lat = float(point.get("lat") or 0.0)
 
         if speed > max_speed:
             max_speed = speed
@@ -55,13 +55,13 @@ def calculate_advanced_trip_score(
         # ซึ่งมาจาก event = 'harsh_brake' ใน telemetry_raw
         if point.get("harsh_braking"):
             is_exempt_low_speed = (
-                config.get("enable_construction_zone_exemption", True) or
-                config.get("enable_accident_delay_exemption", True)
+                config.get("enable_construction_zone_exemption", True)
+                or config.get("enable_accident_delay_exemption", True)
             ) and speed < 20.0
 
             is_mountain = (
-                config.get("enable_mountain_road_exemption", True)
-                and 18.5 < lat < 19.5
+                config.get("enable_mountain_road_exemption",
+                           True) and 18.5 < lat < 19.5
             )
 
             if is_exempt_low_speed:
@@ -88,22 +88,23 @@ def calculate_advanced_trip_score(
 
     # ─── 5. Idling ──────────────────────────────────────────────────────
     idle_points = [
-        p for p in telemetry_data
+        p
+        for p in telemetry_data
         if float(p.get("speed") or 0.0) == 0.0 and p.get("ignition") is True
     ]
     # ส่งข้อมูลทุก 5 วินาที → 12 จุด/นาที
     total_idle_min = (len(idle_points) * 5) / 60.0
 
     all_exempt = (
-        config.get("enable_traffic_jam_exemption",    True) or
-        config.get("enable_warehouse_idling_exemption", True) or
-        config.get("enable_night_rest_exemption",     True)
+        config.get("enable_traffic_jam_exemption", True)
+        or config.get("enable_warehouse_idling_exemption", True)
+        or config.get("enable_night_rest_exemption", True)
     )
     if total_idle_min > max_idle_allowed and not all_exempt:
         score -= (total_idle_min - max_idle_allowed) * idle_deduct_pm
 
     # ─── 6. เพดานหัก + ป้องกัน negative ───────────────────────────────
-    base        = config.get("score_base", 100.0)
+    base = config.get("score_base", 100.0)
     total_deducted = base - score
     if total_deducted > max_deduct:
         score = base - max_deduct
@@ -113,10 +114,10 @@ def calculate_advanced_trip_score(
     return {
         "safety_score": round(final_score, 2),
         "metrics": {
-            "max_speed":          round(max_speed, 2),
-            "speeding_count":     overspeed_count,
-            "harsh_brake_count":  harsh_brake_count,
-            "harsh_accel_count":  harsh_accel_count,
+            "max_speed": round(max_speed, 2),
+            "speeding_count": overspeed_count,
+            "harsh_brake_count": harsh_brake_count,
+            "harsh_accel_count": harsh_accel_count,
             "harsh_corner_count": harsh_corner_count,
             "engine_idle_minutes": round(total_idle_min, 2),
         },
