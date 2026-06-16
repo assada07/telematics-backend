@@ -78,3 +78,4 @@ docker compose \
 | `ODOO_DB_NAME` | ชื่อ DB ของ Odoo |
 | `ODOO_ADMIN_USER` | username Odoo admin |
 | `ODOO_ADMIN_PASSWORD` | password Odoo admin |
+# updated
