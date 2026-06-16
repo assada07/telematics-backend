@@ -359,7 +359,7 @@ async def _finalize_trip(
         max_speed  = round(max(speeds), 1) if speeds else 0.0
 
         # ── 7. idle time ──────────────────────────────────────
-        idle_min = round(metrics.get("idle_duration_min", 0.0), 2)
+        idle_min = round(metrics.get("engine_idle_minutes", 0.0), 2)
 
         # ── 8. event counts ───────────────────────────────────
         harsh_brake_count  = metrics.get("harsh_brake_count",  0)
@@ -376,12 +376,11 @@ async def _finalize_trip(
 
         # ── 11. vehicle_id / driver_id from devices ───────────
         device_row = await connection.fetchrow(
-            "SELECT vehicle_id, driver_id FROM devices WHERE id = $1",
+            "SELECT vehicle_id FROM devices WHERE id = $1",
             device_id,
         )
-
         vehicle_id = device_row["vehicle_id"] if device_row else None
-        driver_id  = device_row["driver_id"]  if device_row else None
+        driver_id  = None  # ไม่มีใน devices — trip_logs รับ NULL ได้
 
         # ── 12. INSERT trip_logs ──────────────────────────────
         await connection.execute(
@@ -412,13 +411,13 @@ async def _finalize_trip(
             max_speed,   avg_speed,
             harsh_brake_count,  harsh_accel_count,
             harsh_corner_count, speeding_count,
-            round(result["score"], 2), fuel_used,
+            round(result["safety_score"], 2), fuel_used,
             gps_track,
         )
 
         logger.info(
             f"[TripManager] {device_id} trip saved "
-            f"score={result['score']:.1f} "
+            f"score={result['safety_score']:.1f} "
             f"dist={distance_km:.1f}km "
             f"dur={duration_min:.1f}min"
         )
@@ -507,10 +506,17 @@ async def handle_telemetry(
             # เริ่ม trip ใหม่ถ้ายังไม่มี
             if not state.is_running:
                 state.is_running  = True
-                state.start_time  = payload.get(
-                    "ts",
-                    datetime.now(timezone.utc)
-                )
+                # payload["ts"] อาจเป็น int/float (unix epoch) หรือ datetime
+                # _finalize_trip ต้องการ datetime → แปลงให้ถูกต้อง
+                _raw_start = payload.get("ts", None)
+                if isinstance(_raw_start, (int, float)):
+                    state.start_time = datetime.fromtimestamp(
+                        _raw_start, tz=timezone.utc
+                    )
+                elif isinstance(_raw_start, datetime):
+                    state.start_time = _raw_start
+                else:
+                    state.start_time = datetime.now(timezone.utc)
                 logger.info(
                     f"[TripManager] {device_id} "
                     f"trip start at {state.start_time}"
@@ -521,10 +527,16 @@ async def handle_telemetry(
 
             if state.is_running and device_id not in TRIP_END_TASKS:
 
-                end_time = payload.get(
-                    "ts",
-                    datetime.now(timezone.utc)
-                )
+                # payload["ts"] อาจเป็น int/float → แปลงเป็น datetime
+                _raw_end = payload.get("ts", None)
+                if isinstance(_raw_end, (int, float)):
+                    end_time = datetime.fromtimestamp(
+                        _raw_end, tz=timezone.utc
+                    )
+                elif isinstance(_raw_end, datetime):
+                    end_time = _raw_end
+                else:
+                    end_time = datetime.now(timezone.utc)
 
                 state.last_ignition_off_time = end_time
 

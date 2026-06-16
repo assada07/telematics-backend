@@ -20,6 +20,82 @@ from app.database import get_db_pool
 
 router = APIRouter(prefix="/api/v1", tags=["Trips"])
 
+
+# ─────────────────────────────────────────────────────────────
+# ⭐ ENDPOINT ใหม่: GET /api/v1/trips/sync-batch
+# ป้องกันการดึงข้อมูลซ้ำแบบ Atomic — ดึง + "จอง" ในคำสั่งเดียว
+#
+# ปัญหาเดิม (2-step: GET unsynced → PATCH mark-synced):
+#   ถ้า Odoo ดึง GET ไปแล้ว แต่ลืมเรียก PATCH (เช่น Odoo ล่ม,
+#   เครือข่ายหลุด, error ระหว่าง process) ข้อมูลจะยังเป็น
+#   synced_to_odoo = FALSE และถูกดึงซ้ำในรอบถัดไป
+#
+# วิธีแก้ (Atomic claim ด้วย UPDATE ... RETURNING):
+#   ใช้ UPDATE พร้อม RETURNING แทน SELECT — แถวที่ถูกดึงจะถูก
+#   mark ว่า synced_to_odoo = TRUE "ในธุรกรรมเดียวกันทันที"
+#   รถ 10 คัน ดึงพร้อมกันก็ไม่มีทางได้ trip ซ้ำกัน เพราะ
+#   PostgreSQL lock แถวที่ถูก UPDATE ไว้แล้วระหว่าง transaction
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/trips/sync-batch", summary="[Odoo] ดึง trip ที่ยังไม่ sync แบบ Atomic (ห้ามดึงซ้ำ)")
+async def get_trips_sync_batch(
+    limit: int = 50,
+    pool: asyncpg.Pool = Depends(get_db_pool),
+):
+    """
+    Odoo เรียก endpoint นี้ทุก 5 นาที (ตามที่ระบุในงาน) เพื่อดึง trip
+    ที่ยังไม่ sync ไป Odoo — รับประกันว่าจะไม่ได้ trip เดิมซ้ำอีก
+    ไม่ว่า Odoo จะเรียกพร้อมกันกี่ครั้ง หรือ process ล้มกลางทาง
+
+    Flow:
+        1. UPDATE trip_logs SET synced_to_odoo = TRUE
+           WHERE synced_to_odoo = FALSE
+           ORDER BY trip_start ASC LIMIT $1
+           RETURNING *
+        2. ถ้า Odoo import ไม่สำเร็จ ให้เรียก
+           PATCH /trips/{id}/mark-synced กลับเป็น false เอง
+           (หรือใช้ retry queue ฝั่ง Odoo)
+
+    Response:
+        {
+            "total": 12,
+            "trips": [ {...}, {...} ]
+        }
+    """
+    try:
+        rows = await pool.fetch(
+            """
+            UPDATE trip_logs
+            SET synced_to_odoo = TRUE,
+                synced_at = NOW()
+            WHERE id IN (
+                SELECT id FROM trip_logs
+                WHERE synced_to_odoo = FALSE
+                ORDER BY trip_start ASC
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING
+                id, device_id, vehicle_id, driver_id,
+                trip_start, trip_end,
+                distance_km, duration_min, idle_min,
+                max_speed, avg_speed,
+                harsh_brake_count, harsh_accel_count,
+                harsh_corner_count, speeding_count,
+                driver_score, fuel_used,
+                created_at, synced_at
+            """,
+            limit,
+        )
+
+        return {
+            "total": len(rows),
+            "trips": [dict(r) for r in rows],
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
 # ─────────────────────────────────────────────────────────────
 # Pydantic Model
 # ─────────────────────────────────────────────────────────────
@@ -212,7 +288,7 @@ async def get_unsynced_trips(
                     "trip_start": "2026-06-15T08:00:00Z",
                     "trip_end": "2026-06-15T17:30:00Z",
                     "distance_km": 45.3,
-                    "duration_minutes": 570,
+                    "duration_min": 570,
                     "driver_score": 92.5,
                     "created_at": "2026-06-15T17:35:00Z"
                 },
@@ -242,7 +318,7 @@ async def get_unsynced_trips(
             SELECT 
                 id, device_id, vehicle_id, driver_id,
                 trip_start, trip_end,
-                distance_km, duration_minutes, driver_score,
+                distance_km, duration_min, driver_score,
                 created_at
             FROM trip_logs
             WHERE {where_sql}
