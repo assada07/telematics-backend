@@ -11,7 +11,6 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: self-hosted
     env:
-      # ดึงค่า Secrets ชุดใหญ่ (สำหรับตัวนอก)
       POSTGRES_DB:              ${{ secrets.POSTGRES_DB }}
       POSTGRES_USER:            ${{ secrets.POSTGRES_USER }}
       POSTGRES_PASSWORD:        ${{ secrets.POSTGRES_PASSWORD }}
@@ -22,11 +21,11 @@ jobs:
       ODOO_ADMIN_PASSWORD:      ${{ secrets.ODOO_ADMIN_PASSWORD }}
       EMQX_DASHBOARD_PASSWORD:  ${{ secrets.EMQX_DASHBOARD_PASSWORD }}
       SECRET_KEY:               ${{ secrets.SECRET_KEY }}
-      
+
     steps:
       - uses: actions/checkout@v4
 
-      # 💡 สเต็ปเสริม 1: สร้างไฟล์ .env สำหรับโปรเจกต์ตัวนอกสุด (Infrastructure)
+      # สร้าง .env สำหรับ docker compose (root)
       - name: Create Global .env File
         run: |
           echo "POSTGRES_DB=${{ secrets.POSTGRES_DB }}" > .env
@@ -38,20 +37,21 @@ jobs:
           echo "ODOO_ADMIN_USER=${{ secrets.ODOO_ADMIN_USER }}" >> .env
           echo "ODOO_ADMIN_PASSWORD=${{ secrets.ODOO_ADMIN_PASSWORD }}" >> .env
 
-      # 💡 สเต็ปเสริม 2: สร้างไฟล์ .env สำหรับโปรเจกต์ตัวใน (fleet-backend) บังคับให้หาเจอ 100%
-      # โดยใช้สิทธิ์ผู้ใช้และรหัสผ่านจากที่แมพกับฐานข้อมูล พร้อมกับพอร์ตเครื่องนอก (5434)
+      # สร้าง .env สำหรับ fleet-backend app (ใช้ชื่อ service ใน Docker)
       - name: Create Fleet Backend .env File
         run: |
-          cd fleet-backend
-          echo "DB_HOST=127.0.0.1" > .env
-          echo "DB_PORT=5434" >> .env
-          echo "DB_NAME=${{ secrets.POSTGRES_DB }}" >> .env
-          echo "DB_USER=${{ secrets.POSTGRES_USER }}" >> .env
-          echo "DB_PASS=${{ secrets.POSTGRES_PASSWORD }}" >> .env
-          echo "MQTT_HOST=127.0.0.1" >> .env
-          echo "MQTT_PORT=1883" >> .env
-          echo "MQTT_TOPIC=kotchasaan/fleet/#" >> .env
+          echo "DB_HOST=timescaledb" > fleet-backend/.env
+          echo "DB_PORT=5432" >> fleet-backend/.env
+          echo "DB_NAME=${{ secrets.POSTGRES_DB }}" >> fleet-backend/.env
+          echo "DB_USER=${{ secrets.POSTGRES_USER }}" >> fleet-backend/.env
+          echo "DB_PASS=${{ secrets.POSTGRES_PASSWORD }}" >> fleet-backend/.env
+          echo "MQTT_HOST=emqx" >> fleet-backend/.env
+          echo "MQTT_PORT=1883" >> fleet-backend/.env
+          echo "MQTT_TOPIC=#" >> fleet-backend/.env
+          echo "SECRET_KEY=${{ secrets.SECRET_KEY }}" >> fleet-backend/.env
+          echo "HMAC_SECRET=fleet_hmac_secret_KTC001_2026" >> fleet-backend/.env
 
+      # สร้าง networks และ volumes ถ้ายังไม่มี
       - name: Create Docker networks and volumes
         run: |
           docker network create backend-net || true
@@ -63,16 +63,13 @@ jobs:
           docker volume create redis-data || true
           docker volume create backend-log || true
 
-      # 💡 ปรับปรุงสเต็ป Deploy: สั่ง Down เพื่อเคลียร์สถานะค้างเก่าก่อนอัปเกรดแบบสะอาด
+      # Deploy — down ก่อนแล้ว up ใหม่ (ไม่ลบ volumes เพื่อรักษาข้อมูล)
       - name: Deploy Infrastructure and Backend
         run: |
-          # 1. ล้างกระบวนการเก่าเพื่อป้องกันรหัสผ่านค้างใน Volume เดิม
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.backend.yml \
-            down -v || true
-          
-          # 2. สั่งเปิดใช้งานระบบทั้งหมดขึ้นมาใหม่แบบคลีนๆ
+            down --remove-orphans
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.backend.yml \
