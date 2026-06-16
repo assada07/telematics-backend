@@ -116,42 +116,56 @@ async def get_active_scoring_config(
         return {
 
             # ── Base ──────────────────────────────────────────
-            "score_base":           100.0,
+            "score_base":
+                float(raw.get("score_base",           100.0)),
 
-            # ── Deduction weights (ตรงกับ column ใน DB) ──────
+            # ── Deduction weights (map จาก column จริงใน DB) ─
+            # DB column:        score_calculator key:
+            # speeding_deduct → weight_speeding
+            # harsh_brake_deduct → weight_harsh_brake
+            # harsh_accel_deduct → weight_harsh_accel
+            # harsh_corner_deduct → weight_harsh_corner
+            # idling_deduct → weight_idling
             "weight_speeding":
-                float(raw.get("weight_speeding",      15.0)),
+                float(raw.get("speeding_deduct",       5.0)),
 
             "weight_harsh_brake":
-                float(raw.get("weight_harsh_brake",   30.0)),
+                float(raw.get("harsh_brake_deduct",    3.0)),
 
             "weight_harsh_accel":
-                float(raw.get("weight_harsh_accel",   25.0)),
+                float(raw.get("harsh_accel_deduct",    3.0)),
 
             "weight_harsh_corner":
-                float(raw.get("weight_harsh_corner",  20.0)),
+                float(raw.get("harsh_corner_deduct",   2.0)),
 
             "weight_idling":
-                float(raw.get("weight_idling",        10.0)),
+                float(raw.get("idling_deduct",         1.0)),
 
             # ── Detection thresholds ──────────────────────────
+            # DB column:         score_calculator key:
+            # speeding_kmh_over → speeding_kmh_over
+            # idle_min_threshold → idle_min_threshold
+            # harsh_brake_g → threshold_harsh_brake
+            # harsh_accel_g → threshold_harsh_accel
+            # harsh_corner_g → threshold_harsh_corner
             "speeding_kmh_over":
-                float(raw.get("threshold_speed_kmh",  90.0)),
+                float(raw.get("speeding_kmh_over",    90.0)),
 
             "idle_min_threshold":
-                float(raw.get("threshold_idle_min",    5.0)),
+                float(raw.get("idle_min_threshold",    5.0)),
 
-            "threshold_brake_g":
-                float(raw.get("threshold_brake_g",     0.4)),
+            "threshold_harsh_brake":
+                float(raw.get("harsh_brake_g",         0.4)),
 
-            "threshold_accel_g":
-                float(raw.get("threshold_accel_g",     0.4)),
+            "threshold_harsh_accel":
+                float(raw.get("harsh_accel_g",         0.4)),
 
-            "threshold_corner_g":
-                float(raw.get("threshold_corner_g",    0.4)),
+            "threshold_harsh_corner":
+                float(raw.get("harsh_corner_g",        0.4)),
 
             # ── Trip cap ──────────────────────────────────────
-            "max_deduct_per_trip":  100.0,
+            "max_deduct_per_trip":
+                float(raw.get("max_deduct_per_trip",  50.0)),
 
             # ── Advanced features ─────────────────────────────
             "night_danger_zone_multiplier":        1.5,
@@ -169,25 +183,25 @@ async def get_active_scoring_config(
     )
 
     return {
-        "score_base":                          100.0,
-        "weight_speeding":                      15.0,
-        "weight_harsh_brake":                   30.0,
-        "weight_harsh_accel":                   25.0,
-        "weight_harsh_corner":                  20.0,
-        "weight_idling":                        10.0,
-        "speeding_kmh_over":                    90.0,
-        "idle_min_threshold":                    5.0,
-        "threshold_brake_g":                     0.4,
-        "threshold_accel_g":                     0.4,
-        "threshold_corner_g":                    0.4,
-        "max_deduct_per_trip":                 100.0,
-        "night_danger_zone_multiplier":          1.5,
-        "enable_construction_zone_exemption":   True,
-        "enable_accident_delay_exemption":      True,
-        "enable_mountain_road_exemption":       True,
-        "enable_traffic_jam_exemption":         True,
-        "enable_warehouse_idling_exemption":    True,
-        "enable_night_rest_exemption":          True,
+        "score_base":                           100.0,
+        "weight_speeding":                        5.0,
+        "weight_harsh_brake":                     3.0,
+        "weight_harsh_accel":                     3.0,
+        "weight_harsh_corner":                    2.0,
+        "weight_idling":                          1.0,
+        "speeding_kmh_over":                     90.0,
+        "idle_min_threshold":                     5.0,
+        "threshold_harsh_brake":                  0.4,
+        "threshold_harsh_accel":                  0.4,
+        "threshold_harsh_corner":                 0.4,
+        "max_deduct_per_trip":                   50.0,
+        "night_danger_zone_multiplier":           1.5,
+        "enable_construction_zone_exemption":    True,
+        "enable_accident_delay_exemption":       True,
+        "enable_mountain_road_exemption":        True,
+        "enable_traffic_jam_exemption":          True,
+        "enable_warehouse_idling_exemption":     True,
+        "enable_night_rest_exemption":           True,
     }
 
 
