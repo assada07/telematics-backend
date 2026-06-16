@@ -21,7 +21,6 @@ class Settings(BaseSettings):
     HMAC_SECRET: str = "fleet_hmac_secret_KTC001_2026"
 
     # โดดค่าจากไฟล์ .env โดยอัตโนมัติ
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
+    model_config = SettingsConfigDict(env_file=None, extra="ignore")
 
 settings = Settings()
