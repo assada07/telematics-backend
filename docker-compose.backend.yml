@@ -100,7 +100,7 @@ services:
       # ชื่อ host ของ DB ใช้ชื่อ service แทน IP (Docker จัดการ DNS เอง)
       DB_HOST:      timescaledb
       # port ของ PostgreSQL (default 5432)
-      DB_PORT:      5432
+      DB_PORT:      5434
       # ชื่อ database ที่ backend จะใช้
       DB_NAME:      ${POSTGRES_DB}
       # username สำหรับต่อ DB
