@@ -1,35 +1,3 @@
-# regionโค้ดอันเก่าที่แก้ขั้นตอนที่เฟส3.1
-# # app/database.py
-# หน้าที่: สร้างและแชร์ asyncpg connection pool ให้ทุกไฟล์ใช้ร่วมกัน
-# import asyncpg
-# from app.config import settings
-
-# _pool: asyncpg.Pool = None
-
-
-# async def get_pool() -> asyncpg.Pool:
-#     global _pool
-#     if _pool is None:
-#         _pool = await asyncpg.create_pool(
-#             host=settings.DB_HOST,
-#             port=settings.DB_PORT,
-#             user=settings.DB_USER,
-#             password=settings.DB_PASS,
-#             database=settings.DB_NAME,
-#             min_size=5,
-#             max_size=20,
-#         )
-#     return _pool
-
-
-# async def close_pool():
-#     global _pool
-#     if _pool:
-#         await _pool.close()
-#         _pool = None
-# endregion
-
-
 # app/database.py
 
 """

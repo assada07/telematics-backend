@@ -579,7 +579,8 @@ async def get_current_scoring_config(
         if not config:
             raise HTTPException(status_code=404, detail="No active config found")
         
-        return dict(config)
+        return {k: round(v, 4) if isinstance(v, float) else v
+                for k, v in dict(config).items()}
         
     except HTTPException:
         raise

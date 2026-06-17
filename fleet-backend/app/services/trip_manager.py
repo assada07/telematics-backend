@@ -116,42 +116,56 @@ async def get_active_scoring_config(
         return {
 
             # ── Base ──────────────────────────────────────────
-            "score_base":           100.0,
+            "score_base":
+                float(raw.get("score_base",           100.0)),
 
-            # ── Deduction weights (ตรงกับ column ใน DB) ──────
+            # ── Deduction weights (map จาก column จริงใน DB) ─
+            # DB column:        score_calculator key:
+            # speeding_deduct → weight_speeding
+            # harsh_brake_deduct → weight_harsh_brake
+            # harsh_accel_deduct → weight_harsh_accel
+            # harsh_corner_deduct → weight_harsh_corner
+            # idling_deduct → weight_idling
             "weight_speeding":
-                float(raw.get("weight_speeding",      15.0)),
+                float(raw.get("speeding_deduct",       5.0)),
 
             "weight_harsh_brake":
-                float(raw.get("weight_harsh_brake",   30.0)),
+                float(raw.get("harsh_brake_deduct",    3.0)),
 
             "weight_harsh_accel":
-                float(raw.get("weight_harsh_accel",   25.0)),
+                float(raw.get("harsh_accel_deduct",    3.0)),
 
             "weight_harsh_corner":
-                float(raw.get("weight_harsh_corner",  20.0)),
+                float(raw.get("harsh_corner_deduct",   2.0)),
 
             "weight_idling":
-                float(raw.get("weight_idling",        10.0)),
+                float(raw.get("idling_deduct",         1.0)),
 
             # ── Detection thresholds ──────────────────────────
+            # DB column:         score_calculator key:
+            # speeding_kmh_over → speeding_kmh_over
+            # idle_min_threshold → idle_min_threshold
+            # harsh_brake_g → threshold_harsh_brake
+            # harsh_accel_g → threshold_harsh_accel
+            # harsh_corner_g → threshold_harsh_corner
             "speeding_kmh_over":
-                float(raw.get("threshold_speed_kmh",  90.0)),
+                float(raw.get("speeding_kmh_over",    90.0)),
 
             "idle_min_threshold":
-                float(raw.get("threshold_idle_min",    5.0)),
+                float(raw.get("idle_min_threshold",    5.0)),
 
-            "threshold_brake_g":
-                float(raw.get("threshold_brake_g",     0.4)),
+            "threshold_harsh_brake":
+                float(raw.get("harsh_brake_g",         0.4)),
 
-            "threshold_accel_g":
-                float(raw.get("threshold_accel_g",     0.4)),
+            "threshold_harsh_accel":
+                float(raw.get("harsh_accel_g",         0.4)),
 
-            "threshold_corner_g":
-                float(raw.get("threshold_corner_g",    0.4)),
+            "threshold_harsh_corner":
+                float(raw.get("harsh_corner_g",        0.4)),
 
             # ── Trip cap ──────────────────────────────────────
-            "max_deduct_per_trip":  100.0,
+            "max_deduct_per_trip":
+                float(raw.get("max_deduct_per_trip",  50.0)),
 
             # ── Advanced features ─────────────────────────────
             "night_danger_zone_multiplier":        1.5,
@@ -169,25 +183,25 @@ async def get_active_scoring_config(
     )
 
     return {
-        "score_base":                          100.0,
-        "weight_speeding":                      15.0,
-        "weight_harsh_brake":                   30.0,
-        "weight_harsh_accel":                   25.0,
-        "weight_harsh_corner":                  20.0,
-        "weight_idling":                        10.0,
-        "speeding_kmh_over":                    90.0,
-        "idle_min_threshold":                    5.0,
-        "threshold_brake_g":                     0.4,
-        "threshold_accel_g":                     0.4,
-        "threshold_corner_g":                    0.4,
-        "max_deduct_per_trip":                 100.0,
-        "night_danger_zone_multiplier":          1.5,
-        "enable_construction_zone_exemption":   True,
-        "enable_accident_delay_exemption":      True,
-        "enable_mountain_road_exemption":       True,
-        "enable_traffic_jam_exemption":         True,
-        "enable_warehouse_idling_exemption":    True,
-        "enable_night_rest_exemption":          True,
+        "score_base":                           100.0,
+        "weight_speeding":                        5.0,
+        "weight_harsh_brake":                     3.0,
+        "weight_harsh_accel":                     3.0,
+        "weight_harsh_corner":                    2.0,
+        "weight_idling":                          1.0,
+        "speeding_kmh_over":                     90.0,
+        "idle_min_threshold":                     5.0,
+        "threshold_harsh_brake":                  0.4,
+        "threshold_harsh_accel":                  0.4,
+        "threshold_harsh_corner":                 0.4,
+        "max_deduct_per_trip":                   50.0,
+        "night_danger_zone_multiplier":           1.5,
+        "enable_construction_zone_exemption":    True,
+        "enable_accident_delay_exemption":       True,
+        "enable_mountain_road_exemption":        True,
+        "enable_traffic_jam_exemption":          True,
+        "enable_warehouse_idling_exemption":     True,
+        "enable_night_rest_exemption":           True,
     }
 
 
@@ -359,7 +373,7 @@ async def _finalize_trip(
         max_speed  = round(max(speeds), 1) if speeds else 0.0
 
         # ── 7. idle time ──────────────────────────────────────
-        idle_min = round(metrics.get("idle_duration_min", 0.0), 2)
+        idle_min = round(metrics.get("engine_idle_minutes", 0.0), 2)
 
         # ── 8. event counts ───────────────────────────────────
         harsh_brake_count  = metrics.get("harsh_brake_count",  0)
@@ -376,12 +390,11 @@ async def _finalize_trip(
 
         # ── 11. vehicle_id / driver_id from devices ───────────
         device_row = await connection.fetchrow(
-            "SELECT vehicle_id, driver_id FROM devices WHERE id = $1",
+            "SELECT vehicle_id FROM devices WHERE id = $1",
             device_id,
         )
-
         vehicle_id = device_row["vehicle_id"] if device_row else None
-        driver_id  = device_row["driver_id"]  if device_row else None
+        driver_id  = None  # ไม่มีใน devices — trip_logs รับ NULL ได้
 
         # ── 12. INSERT trip_logs ──────────────────────────────
         await connection.execute(
@@ -412,13 +425,13 @@ async def _finalize_trip(
             max_speed,   avg_speed,
             harsh_brake_count,  harsh_accel_count,
             harsh_corner_count, speeding_count,
-            round(result["score"], 2), fuel_used,
+            round(result["safety_score"], 2), fuel_used,
             gps_track,
         )
 
         logger.info(
             f"[TripManager] {device_id} trip saved "
-            f"score={result['score']:.1f} "
+            f"score={result['safety_score']:.1f} "
             f"dist={distance_km:.1f}km "
             f"dur={duration_min:.1f}min"
         )
@@ -507,10 +520,17 @@ async def handle_telemetry(
             # เริ่ม trip ใหม่ถ้ายังไม่มี
             if not state.is_running:
                 state.is_running  = True
-                state.start_time  = payload.get(
-                    "ts",
-                    datetime.now(timezone.utc)
-                )
+                # payload["ts"] อาจเป็น int/float (unix epoch) หรือ datetime
+                # _finalize_trip ต้องการ datetime → แปลงให้ถูกต้อง
+                _raw_start = payload.get("ts", None)
+                if isinstance(_raw_start, (int, float)):
+                    state.start_time = datetime.fromtimestamp(
+                        _raw_start, tz=timezone.utc
+                    )
+                elif isinstance(_raw_start, datetime):
+                    state.start_time = _raw_start
+                else:
+                    state.start_time = datetime.now(timezone.utc)
                 logger.info(
                     f"[TripManager] {device_id} "
                     f"trip start at {state.start_time}"
@@ -521,10 +541,16 @@ async def handle_telemetry(
 
             if state.is_running and device_id not in TRIP_END_TASKS:
 
-                end_time = payload.get(
-                    "ts",
-                    datetime.now(timezone.utc)
-                )
+                # payload["ts"] อาจเป็น int/float → แปลงเป็น datetime
+                _raw_end = payload.get("ts", None)
+                if isinstance(_raw_end, (int, float)):
+                    end_time = datetime.fromtimestamp(
+                        _raw_end, tz=timezone.utc
+                    )
+                elif isinstance(_raw_end, datetime):
+                    end_time = _raw_end
+                else:
+                    end_time = datetime.now(timezone.utc)
 
                 state.last_ignition_off_time = end_time
 

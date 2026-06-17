@@ -1,7 +1,6 @@
 # app/config.py
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 class Settings(BaseSettings):
     # Database Settings (TimescaleDB)
     DB_HOST: str
@@ -13,7 +12,7 @@ class Settings(BaseSettings):
     # MQTT Broker Settings
     MQTT_HOST: str
     MQTT_PORT: int
-    MQTT_USER: str = "admin"  # ค่า Default ของ EMQX
+    MQTT_USER: str = "admin"   # ค่า Default ของ EMQX
     MQTT_PASS: str = "public"  # ค่า Default ของ EMQX
     MQTT_TOPIC: str
 
@@ -21,6 +20,6 @@ class Settings(BaseSettings):
     HMAC_SECRET: str = "fleet_hmac_secret_KTC001_2026"
 
     # โดดค่าจากไฟล์ .env โดยอัตโนมัติ
-    # อ่านจาก environment variables เท่านั้น ไม่พึ่ง .env
-    model_config = SettingsConfigDict(env_file=None, extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
 settings = Settings()

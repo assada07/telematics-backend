@@ -5,16 +5,11 @@ from app.config import settings
 
 router = APIRouter(prefix="/api/v1/reports", tags=["Reports"])
 
-
 async def get_db_connection():
     return await asyncpg.connect(
-        user=settings.DB_USER,
-        password=settings.DB_PASS,
-        database=settings.DB_NAME,
-        host=settings.DB_HOST,
-        port=settings.DB_PORT,
+        user=settings.DB_USER, password=settings.DB_PASS,
+        database=settings.DB_NAME, host=settings.DB_HOST, port=settings.DB_PORT
     )
-
 
 # ============================================================
 # GET /api/v1/reports/driver-score — คะแนนรายเดือน
@@ -24,8 +19,7 @@ async def report_driver_score(months: int = 3):
     """รายงานคะแนนพนักงานย้อนหลัง N เดือน"""
     try:
         conn = await get_db_connection()
-        rows = await conn.fetch(
-            """
+        rows = await conn.fetch("""
             SELECT
                 driver_id,
                 TO_CHAR(DATE_TRUNC('month', trip_start), 'YYYY-MM') AS month,
@@ -38,18 +32,11 @@ async def report_driver_score(months: int = 3):
             WHERE trip_start >= NOW() - ($1 || ' months')::interval
             GROUP BY driver_id, DATE_TRUNC('month', trip_start)
             ORDER BY month DESC, driver_id ASC
-        """,
-            str(months),
-        )
+        """, str(months))
         await conn.close()
-        return {
-            "months": months,
-            "total_records": len(rows),
-            "data": [dict(r) for r in rows],
-        }
+        return {"months": months, "total_records": len(rows), "data": [dict(r) for r in rows]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ============================================================
 # GET /api/v1/reports/fleet-summary — ภาพรวม fleet รายวัน
@@ -59,8 +46,7 @@ async def report_fleet_summary(days: int = 7):
     """ภาพรวม fleet รายวัน ย้อนหลัง N วัน"""
     try:
         conn = await get_db_connection()
-        rows = await conn.fetch(
-            """
+        rows = await conn.fetch("""
             SELECT
                 DATE(trip_start) AS date,
                 COUNT(*) AS total_trips,
@@ -73,14 +59,11 @@ async def report_fleet_summary(days: int = 7):
             WHERE trip_start >= NOW() - ($1 || ' days')::interval
             GROUP BY DATE(trip_start)
             ORDER BY date DESC
-        """,
-            str(days),
-        )
+        """, str(days))
         await conn.close()
         return {"days": days, "total_days": len(rows), "data": [dict(r) for r in rows]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ============================================================
 # GET /api/v1/reports/fuel-efficiency — Fuel report
@@ -90,8 +73,7 @@ async def report_fuel_efficiency(days: int = 30):
     """รายงานประสิทธิภาพเชื้อเพลิงรายรถ"""
     try:
         conn = await get_db_connection()
-        rows = await conn.fetch(
-            """
+        rows = await conn.fetch("""
             SELECT
                 vehicle_id,
                 COUNT(*) AS total_trips,
@@ -108,19 +90,11 @@ async def report_fuel_efficiency(days: int = 30):
               AND vehicle_id > 0
             GROUP BY vehicle_id
             ORDER BY fuel_per_100km DESC
-        """,
-            str(days),
-        )
+        """, str(days))
         await conn.close()
-        return {
-            "days": days,
-            "unit": "ลิตร",
-            "total_vehicles": len(rows),
-            "data": [dict(r) for r in rows],
-        }
+        return {"days": days, "unit": "ลิตร", "total_vehicles": len(rows), "data": [dict(r) for r in rows]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ============================================================
 # GET /api/v1/reports/maintenance-forecast — คาดการณ์ซ่อมบำรุง
@@ -160,7 +134,7 @@ async def report_maintenance_forecast():
         return {
             "total_vehicles": len(rows),
             "needs_maintenance": sum(1 for r in rows if r["needs_maintenance"]),
-            "data": [dict(r) for r in rows],
+            "data": [dict(r) for r in rows]
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

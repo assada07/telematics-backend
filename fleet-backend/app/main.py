@@ -1,80 +1,3 @@
-# regionโค้ดอันเก่าที่แก้ขั้นตอนที่เฟส3.2
-# # app/main.py
-# import asyncio
-# import sys
-# from fastapi import FastAPI
-# from fastapi.staticfiles import StaticFiles
-# from fastapi.responses import FileResponse
-# from contextlib import asynccontextmanager
-# from app.services.mqtt_subscriber import mqtt_subscriber_task
-
-# if sys.platform == "win32":
-#     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-# # ── Routers เดิม ──────────────────────────────────────────────
-# from app.api import routes_vehicles
-# from app.api import routes_trips
-# from app.api import routes_drivers
-# from app.api import routes_config
-# from app.api import routes_reports
-
-# # ── Routers ใหม่ (STEP 2) ─────────────────────────────────────
-# from app.auth.routes import router as auth_router
-
-
-# @asynccontextmanager
-# async def lifespan(app: FastAPI):
-#     bg_task = asyncio.create_task(mqtt_subscriber_task())
-#     print("🚀 ระบบดักฟังข้อมูลยานพาหนะ (MQTT Subscriber) เริ่มทำงานแล้ว")
-#     yield
-#     bg_task.cancel()
-#     try:
-#         await bg_task
-#     except asyncio.CancelledError:
-#         print("🛑 หยุดการทำงานระบบดักฟังเรียบร้อย (Gracefully Stopped)")
-
-
-# app = FastAPI(
-#     title="Kotchasaan Enterprise Fleet Telematics API",
-#     version="2.0.0",
-#     lifespan=lifespan
-# )
-
-# # ── Static files ──────────────────────────────────────────────
-# try:
-#     app.mount("/static", StaticFiles(directory="static"), name="static")
-# except Exception:
-#     pass
-
-# @app.get("/tester", include_in_schema=False)
-# async def api_tester():
-#     return FileResponse("static/fleet_api_tester.html")
-
-# # ── Routers เดิม ──────────────────────────────────────────────
-# app.include_router(routes_vehicles.router)
-# app.include_router(routes_vehicles.fleet_router)  # SSE /fleet/live
-# app.include_router(routes_trips.router)
-# app.include_router(routes_drivers.router)
-# app.include_router(routes_config.router)
-# app.include_router(routes_reports.router)
-
-# # ── Routers ใหม่ ──────────────────────────────────────────────
-# app.include_router(auth_router)   # /auth/login, /auth/apikey, ...
-
-
-# @app.get("/")
-# async def root():
-#     return {
-#         "status": "running",
-#         "project": "Kotchasaan Fleet Telematics & Driver Behavior Monitoring System",
-#         "compliance": "FDD v1.4 Full",
-#         "version": "2.0.0",
-#         "tester_ui": "/tester",
-#         "docs": "/docs"
-#     }
-# endregion
-
-
 # app/main.py
 
 import asyncio
@@ -120,11 +43,12 @@ if sys.platform == "win32":
 # Logging
 # ──────────────────────────────────────────────
 
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="🚀 %(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
-# ──────────────────────────────────────────────
-# Routers
-# ──────────────────────────────────────────────
+logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────
 # Lifespan
@@ -146,9 +70,7 @@ async def lifespan(app: FastAPI):
         #
         await create_db_pool()
 
-        logger.info(
-            "Database connected"
-        )
+        logger.info("Database connected")
 
         #
         # 2. Start MQTT Worker
@@ -158,23 +80,17 @@ async def lifespan(app: FastAPI):
             name="mqtt-subscriber"
         )
 
-        logger.info(
-            "MQTT worker started"
-        )
+        logger.info("MQTT worker started")
 
         yield
 
     except Exception:
-        logger.exception(
-            "Application startup failed"
-        )
+        logger.exception("Application startup failed")
         raise
 
     finally:
 
-        logger.info(
-            "Application shutdown"
-        )
+        logger.info("Application shutdown")
 
         #
         # 1. Stop MQTT Worker
@@ -187,23 +103,17 @@ async def lifespan(app: FastAPI):
                 await mqtt_task
 
             except asyncio.CancelledError:
-                logger.info(
-                    "MQTT worker stopped"
-                )
+                logger.info("MQTT worker stopped")
 
             except Exception:
-                logger.exception(
-                    "MQTT worker shutdown error"
-                )
+                logger.exception("MQTT worker shutdown error")
 
         #
         # 2. Close Database Pool
         #
         await close_db_pool()
 
-        logger.info(
-            "Application shutdown completed"
-        )
+        logger.info("Application shutdown completed")
 
 
 # ──────────────────────────────────────────────
@@ -272,25 +182,9 @@ app = FastAPI(
 # CORS
 # ──────────────────────────────────────────────
 
-# Production:
-# เพิ่ม FRONTEND_URL ใน config.py เช่น
-#
-# FRONTEND_URL: str = "https://fleet.example.com"
-#
-# แล้วใช้:
-#
-# allow_origins=[settings.FRONTEND_URL]
-#
-# ไม่ควรใช้ ["*"] ใน production
-
-frontend_url = getattr(
-    settings,
-    "FRONTEND_URL",
-    None
-)
+frontend_url = getattr(settings, "FRONTEND_URL", None)
 
 if frontend_url:
-
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[frontend_url],
@@ -313,46 +207,21 @@ except Exception:
     pass
 
 
-@app.get(
-    "/tester",
-    include_in_schema=False
-)
+@app.get("/tester", include_in_schema=False)
 async def api_tester():
-    return FileResponse(
-        "static/fleet_api_tester.html"
-    )
+    return FileResponse("static/fleet_api_tester.html")
 
 # ──────────────────────────────────────────────
-# Existing Routers
+# Routers
 # ──────────────────────────────────────────────
 
-app.include_router(
-    routes_vehicles.router
-)
-
-app.include_router(
-    routes_vehicles.fleet_router
-)
-
-app.include_router(
-    routes_trips.router
-)
-
-app.include_router(
-    routes_drivers.router
-)
-
-app.include_router(
-    routes_config.router
-)
-
-app.include_router(
-    routes_reports.router
-)
-
-app.include_router(
-    auth_router
-)
+app.include_router(routes_vehicles.router)
+app.include_router(routes_vehicles.fleet_router)
+app.include_router(routes_trips.router)
+app.include_router(routes_drivers.router)
+app.include_router(routes_config.router)
+app.include_router(routes_reports.router)
+app.include_router(auth_router)
 
 # ──────────────────────────────────────────────
 # Root Endpoint
