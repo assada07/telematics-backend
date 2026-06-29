@@ -395,7 +395,7 @@ async def report_maintenance_forecast(
             km_high,             # $2 — Trigger 1 high
             km_medium,           # $3 — Trigger 1 medium
             engine_hours_high,   # $4 — Trigger 2 high
-            engine_hours_medium, # $5 — Trigger 2 medium
+            engine_hours_medium,  # $5 — Trigger 2 medium  ← +1 space
             days_since_service,  # $6 — Trigger 3
             harsh_brake_limit,   # $7 — harsh event
         )
