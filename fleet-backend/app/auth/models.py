@@ -19,7 +19,7 @@ async def get_user_by_username(
         SELECT *
         FROM users
         WHERE username = $1
-          AND active = TRUE
+          AND is_active = TRUE
         """,
         username
     )
@@ -39,7 +39,7 @@ async def get_user_by_id(
             username,
             full_name,
             role,
-            active,
+            is_active,
             created_at
         FROM users
         WHERE id = $1
@@ -70,15 +70,15 @@ async def create_api_key(
     key_name: str,
 ) -> dict:
 
-    api_key = secrets.token_hex(32)
+    key_hash = secrets.token_hex(32)
 
     row = await conn.fetchrow(
         """
         INSERT INTO api_keys
         (
-            key_name,
-            api_key,
-            active
+            name,
+            key_hash,
+            is_active
         )
         VALUES
         (
@@ -89,7 +89,7 @@ async def create_api_key(
         RETURNING *
         """,
         key_name,
-        api_key
+        key_hash
     )
 
     return dict(row)
@@ -104,8 +104,8 @@ async def get_api_key(
         """
         SELECT *
         FROM api_keys
-        WHERE api_key = $1
-          AND active = TRUE
+        WHERE key_hash = $1
+          AND is_active = TRUE
         """,
         api_key
     )
@@ -121,8 +121,8 @@ async def list_api_keys(
         """
         SELECT
             id,
-            key_name,
-            active,
+            name,
+            is_active,
             created_at
         FROM api_keys
         ORDER BY created_at DESC
@@ -140,7 +140,7 @@ async def revoke_api_key(
     result = await conn.execute(
         """
         UPDATE api_keys
-        SET active = FALSE
+        SET is_active = FALSE
         WHERE id = $1
         """,
         key_id
@@ -155,7 +155,13 @@ async def update_key_last_used(
     ip: str
 ):
     """
-    ตาราง api_keys ไม่มี last_used_at
-    จึงปล่อยผ่าน
+    อัปเดต last_used timestamp ใน api_keys
     """
-    return
+    await conn.execute(
+        """
+        UPDATE api_keys
+        SET last_used = NOW()
+        WHERE key_hash = $1
+        """,
+        api_key
+    )

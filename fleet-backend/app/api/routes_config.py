@@ -42,6 +42,7 @@ class VehicleConfigUpdate(BaseModel):
     vehicle_id: int
     new_device_id: str
     old_device_id: Optional[str] = None  # Explicitly provide to ensure
+    driver_id: Optional[int] = None      # รหัสคนขับ (ดึงจาก Odoo)
 
 
 class ScoringConfigRequest(BaseModel):
@@ -440,27 +441,48 @@ async def update_vehicle_config(
                 new_device_id = request.new_device_id.upper()
                 old_device_id = request.old_device_id.upper() if request.old_device_id else None
 
-                # ── 1. หาบอร์ดปัจจุบันของรถคันนี้ ──────────────────────
+                # ── 1. หาบอร์ดและ driver ปัจจุบันของรถคันนี้ ────────────
                 current = await conn.fetchrow(
-                    "SELECT device_id FROM update_status WHERE vehicle_id = $1 LIMIT 1",
+                    "SELECT device_id, driver_id FROM update_status WHERE vehicle_id = $1 LIMIT 1",
                     vehicle_id
                 )
                 actual_old_device = current["device_id"] if current else None
+                actual_old_driver = current["driver_id"] if current else None
 
                 # ── safety check: old_device_id ที่ Odoo ส่งมาตรงกันไหม ──
                 if old_device_id and actual_old_device and old_device_id != actual_old_device:
-                    # แจ้งเตือนแต่ไม่ block — ใช้ actual จาก DB แทน
-                    pass  # log ไว้ได้ถ้าต้องการ
+                    pass
 
-                # ── 2. บอร์ดเดิม = บอร์ดใหม่ → ไม่ต้องทำอะไร ───────────
-                if actual_old_device and actual_old_device == new_device_id:
+                # ── 2. บอร์ดเดิม = บอร์ดใหม่ AND driver ไม่เปลี่ยน → no_change
+                device_same   = actual_old_device and actual_old_device == new_device_id
+                driver_same   = actual_old_driver == request.driver_id
+
+                if device_same and driver_same:
                     return {
                         "status": "no_change",
                         "vehicle_id": vehicle_id,
                         "device_id": new_device_id,
+                        "driver_id": request.driver_id,
                         "previous_device_id": None,
                         "migrated_trip_logs": 0,
-                        "message": f"รถ {vehicle_id} ผูกกับบอร์ด {new_device_id} อยู่แล้ว"
+                        "message": f"รถ {vehicle_id} ผูกกับบอร์ด {new_device_id} และคนขับ {request.driver_id} อยู่แล้ว"
+                    }
+
+                # ── 2b. บอร์ดเดิมแต่ driver เปลี่ยน → อัปเดต driver_id อย่างเดียว ──
+                if device_same and not driver_same:
+                    await conn.execute(
+                        "UPDATE update_status SET driver_id = $1, date_update_latest = NOW() "
+                        "WHERE vehicle_id = $2 AND device_id = $3",
+                        request.driver_id, vehicle_id, new_device_id
+                    )
+                    return {
+                        "status": "driver_updated",
+                        "vehicle_id": vehicle_id,
+                        "device_id": new_device_id,
+                        "driver_id": request.driver_id,
+                        "previous_driver_id": actual_old_driver,
+                        "migrated_trip_logs": 0,
+                        "message": f"อัปเดตคนขับรถ {vehicle_id} จาก {actual_old_driver} → {request.driver_id} สำเร็จ"
                     }
 
                 # ── 3. ถ้าบอร์ดใหม่ผูกกับรถอื่นอยู่ → ปลดออกก่อน ───────
@@ -505,19 +527,23 @@ async def update_vehicle_config(
                 # ── 5. ผูกบอร์ดใหม่ ──────────────────────────────────────
                 await conn.execute(
                     """
-                    INSERT INTO devices (id, vehicle_id, active)
-                    VALUES ($1, $2, true)
-                    ON CONFLICT (id) DO UPDATE SET vehicle_id = $2, active = true
+                    INSERT INTO devices (id, vehicle_id, active, driver_id)
+                    VALUES ($1, $2, true, $3)
+                    ON CONFLICT (id) DO UPDATE
+                        SET vehicle_id = $2,
+                            active     = true,
+                            driver_id  = $3
                     """,
-                    new_device_id, vehicle_id
+                    new_device_id, vehicle_id, request.driver_id
                 )
                 await conn.execute(
                     """
-                    INSERT INTO update_status (vehicle_id, device_id, date_update_latest)
-                    VALUES ($1, $2, NOW())
-                    ON CONFLICT (vehicle_id, device_id) DO UPDATE SET date_update_latest = NOW()
+                    INSERT INTO update_status (vehicle_id, device_id, driver_id, date_update_latest)
+                    VALUES ($1, $2, $3, NOW())
+                    ON CONFLICT (vehicle_id, device_id)
+                    DO UPDATE SET driver_id = $3, date_update_latest = NOW()
                     """,
-                    vehicle_id, new_device_id
+                    vehicle_id, new_device_id, request.driver_id
                 )
 
                 status = "registered" if not actual_old_device else "migrated"
@@ -584,5 +610,99 @@ async def get_current_scoring_config(
         
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ─────────────────────────────────────────────────────────────
+# POST Scoring Config — Odoo push config ใหม่
+# ─────────────────────────────────────────────────────────────
+
+@router.post("/config/scoring", status_code=201)
+async def push_scoring_config(
+    request: ScoringConfigRequest,
+    pool: asyncpg.Pool = Depends(get_db_pool)
+):
+    """
+    Odoo push scoring config ใหม่เข้า cache
+
+    - Deactivate config เก่าทั้งหมดก่อน
+    - Insert config ใหม่ พร้อม is_active = true
+    - คืน config ที่เพิ่งบันทึก
+
+    Body: ScoringConfigRequest (config_name บังคับ ที่เหลือมี default)
+    """
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+
+                # 1. Deactivate ทุก config ที่ active อยู่
+                await conn.execute(
+                    "UPDATE scoring_config_cache SET is_active = false WHERE is_active = true"
+                )
+
+                # 2. Insert config ใหม่
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO scoring_config_cache (
+                        config_name,
+                        score_base,
+                        harsh_brake_deduct,
+                        harsh_accel_deduct,
+                        harsh_corner_deduct,
+                        speeding_deduct,
+                        idling_deduct,
+                        bump_deduct,
+                        harsh_brake_g,
+                        harsh_accel_g,
+                        harsh_corner_g,
+                        speeding_kmh_over,
+                        idle_min_threshold,
+                        max_deduct_per_trip,
+                        is_active,
+                        effective_date,
+                        synced_from_odoo_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8,
+                        $9, $10, $11, $12, $13, $14,
+                        true,
+                        CURRENT_DATE,
+                        $15
+                    )
+                    RETURNING
+                        id, config_name, score_base,
+                        harsh_brake_deduct, harsh_accel_deduct,
+                        harsh_corner_deduct, speeding_deduct,
+                        idling_deduct, bump_deduct,
+                        harsh_brake_g, harsh_accel_g, harsh_corner_g,
+                        speeding_kmh_over, idle_min_threshold,
+                        max_deduct_per_trip, is_active,
+                        effective_date, synced_from_odoo_at
+                    """,
+                    request.config_name,
+                    request.score_base,
+                    request.harsh_brake_deduct,
+                    request.harsh_accel_deduct,
+                    request.harsh_corner_deduct,
+                    request.speeding_deduct,
+                    request.idling_deduct,
+                    request.bump_deduct,
+                    request.harsh_brake_g,
+                    request.harsh_accel_g,
+                    request.harsh_corner_g,
+                    request.speeding_kmh_over,
+                    request.idle_min_threshold,
+                    request.max_deduct_per_trip,
+                    request.synced_from_odoo_at,
+                )
+
+                return {
+                    "status": "success",
+                    "message": f"Config '{request.config_name}' activated",
+                    "config": {
+                        k: round(v, 4) if isinstance(v, float) else v
+                        for k, v in dict(row).items()
+                    }
+                }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

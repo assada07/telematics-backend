@@ -390,11 +390,17 @@ async def _finalize_trip(
 
         # ── 11. vehicle_id / driver_id from devices ───────────
         device_row = await connection.fetchrow(
-            "SELECT vehicle_id FROM devices WHERE id = $1",
+            """
+            SELECT d.vehicle_id, us.driver_id
+            FROM devices d
+            LEFT JOIN update_status us ON us.device_id = d.id
+            WHERE d.id = $1
+            LIMIT 1
+            """,
             device_id,
         )
         vehicle_id = device_row["vehicle_id"] if device_row else None
-        driver_id  = None  # ไม่มีใน devices — trip_logs รับ NULL ได้
+        driver_id  = device_row["driver_id"]  if device_row else None
 
         # ── 12. INSERT trip_logs ──────────────────────────────
         await connection.execute(

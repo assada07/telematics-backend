@@ -71,7 +71,7 @@ async def login(
 
             if not verify_password(
                 form.password,
-                user["password_hash"]
+                user["hashed_password"]
             ):
                 raise HTTPException(
                     status_code=401,
@@ -160,10 +160,10 @@ async def register_user(
             INSERT INTO users
             (
                 username,
-                password_hash,
+                hashed_password,
                 full_name,
                 role,
-                active
+                is_active
             )
             VALUES
             (

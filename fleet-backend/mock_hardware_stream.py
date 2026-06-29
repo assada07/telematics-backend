@@ -7,7 +7,7 @@ import asyncio
 from datetime import datetime, timezone
 from paho.mqtt import client as mqtt_client
 
-MQTT_HOST = "192.168.1.43"
+MQTT_HOST = "192.168.1.42"
 MQTT_PORT = 1884
 MQTT_TOPIC = "kotchasaan/fleet/KTC-001/telemetry"
 HMAC_SECRET = "fleet_hmac_secret_KTC001_2026"
@@ -16,8 +16,7 @@ def generate_signed_payload(data: dict, secret_key: str) -> str:
     payload_str = json.dumps(data, separators=(',', ':'))
     base_str = payload_str[:-1]
 
-    # BUG FIX 1: hmac.new → hmac.new ไม่มีใน Python, ต้องใช้ hmac.new
-    # ที่ถูกคือ hmac.new → แก้เป็น hmac.new
+    # hmac.new() คือ API มาตรฐานของ Python stdlib (ใช้ได้ปกติ)
     sig = hmac.new(
         secret_key.encode('utf-8'),
         payload_str.encode('utf-8'),
@@ -40,7 +39,7 @@ async def main():
     # ── Event 1: Ignition ON ──────────────────────────────────────
     print("\n🎬 [Event 1/4] สตาร์ทรถยนต์เพื่อเปิดทริปการเดินทาง...")
     start_payload = {
-        "ts": base_ts, "device_id": "KTC-001",
+        "ts": base_ts, "device_id": "KTC-002",
         "lat": 13.7563, "lon": 100.5018,
         "speed": 0.0, "heading": 90, "alt": 10, "hdop": 0.9, "rpm": 850,
         "throttle": 0.0, "engine_load": 15.0, "coolant_temp": 85, "fuel_level": 80.0,
@@ -53,9 +52,8 @@ async def main():
     await asyncio.sleep(2)
 
     # ── Event 2: Speeding (ใช้ ts จริง ไม่ต้องจำลองตี 2) ──────────
-    # BUG FIX 2: midnight_ts คำนวณผิด (ดึง .tm_sec แทน mktime)
-    # ลบทิ้ง ใช้ base_ts + offset แทน ถ้าอยากทดสอบ night multiplier
-    # ให้รันตอนตี 0-4 จริง ๆ หรือแก้ ts ใน DB หลังทดสอบ
+    # หมายเหตุ: ถ้าอยากทดสอบ night multiplier (คะแนนหักเพิ่มช่วงตี 0-4)
+    # ให้รันตอนตี 0-4 จริงๆ หรือแก้ ts ใน DB โดยตรงหลังทดสอบ
     print("🚨 [Event 2/4] วิ่งความเร็ว 110 กม./ชม. เกินเกณฑ์...")
     overspeed_payload = start_payload.copy()
     overspeed_payload.update({
@@ -74,7 +72,7 @@ async def main():
     braking_payload.update({
         "ts": base_ts + 20,
         "speed": 15.0,
-        # BUG FIX 3: "harsh_braking" ไม่มีใน schema → ลบออก ใช้ event แทน
+        # event ใช้ค่า "harsh_brake" ตรงกับ schema ใน telemetry_raw และ score_calculator
         "event": "harsh_brake",
         "event_severity": 0.9,
         "ax": -0.65,
