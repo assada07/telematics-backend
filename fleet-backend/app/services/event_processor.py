@@ -29,6 +29,11 @@ def filter_imu_noise_event(
 ) -> Dict[str, bool]:
     """
     Backward compatibility
+
+    [BUG-4 FIX] แกนสลับผิดกับ FDD v1.4 §10.4 Harsh Event Detection Algorithm:
+      - Harsh Brake        : ax < -0.4G  (เดิมใช้ ay)
+      - Harsh Acceleration : ax > +0.4G  (เดิมใช้ ay)
+      - Harsh Cornering    : |ay| > 0.4G (เดิมใช้ ax)
     """
 
     HARSH_BRAKE_THRESHOLD = -0.4
@@ -39,9 +44,9 @@ def filter_imu_noise_event(
     ay = ay or 0.0
 
     return {
-        "is_harsh_braking": ay < HARSH_BRAKE_THRESHOLD,
-        "is_harsh_acceleration": ay > HARSH_ACCEL_THRESHOLD,
-        "is_harsh_cornering": abs(ax) > HARSH_CORNER_THRESHOLD
+        "is_harsh_braking": ax < HARSH_BRAKE_THRESHOLD,
+        "is_harsh_acceleration": ax > HARSH_ACCEL_THRESHOLD,
+        "is_harsh_cornering": abs(ay) > HARSH_CORNER_THRESHOLD
     }
 
 
@@ -62,9 +67,16 @@ def _calculate_severity(
 ) -> float:
     """
     normalize severity ให้อยู่ช่วง 0-1
+
+    [BUG-1 FIX] เดิม guard clause คือ `if threshold <= 0: return 0.0`
+    ซึ่งผิด เพราะ threshold ของ harsh_brake เป็นค่าติดลบโดยธรรมชาติ
+    (เช่น -0.4G ตาม FDD §10.4: ax < -0.4G) ทำให้ severity ของ
+    harsh_brake เป็น 0.00 เสมอไม่ว่าค่า ax จะรุนแรงแค่ไหน
+    แก้เป็นเช็คแค่ threshold == 0 เพื่อป้องกันหารด้วยศูนย์เท่านั้น
+    ใช้ abs() ทั้งเศษและส่วน severity จึงถูกต้องทั้งกรณี threshold บวก/ลบ
     """
 
-    if threshold <= 0:
+    if threshold == 0:
         return 0.0
 
     severity = abs(value) / abs(threshold)
@@ -76,17 +88,21 @@ def _detect_harsh_brake(
         payload: dict,
         config: dict
 ):
+    """
+    FDD v1.4 §10.4: Harsh Brake — ax < -0.4G (เบรคหัก)
+    [BUG-4 FIX] เดิมอ่าน ay ซึ่งผิดแกน แก้เป็น ax
+    """
 
-    ay = _safe_float(payload.get("ay"))
+    ax = _safe_float(payload.get("ax"))
 
     threshold = _safe_float(
         config.get("threshold_harsh_brake", -0.4)
     )
 
-    if ay < threshold:
+    if ax < threshold:
 
         severity = _calculate_severity(
-            ay,
+            ax,
             threshold
         )
 
@@ -99,17 +115,21 @@ def _detect_harsh_acceleration(
         payload: dict,
         config: dict
 ):
+    """
+    FDD v1.4 §10.4: Harsh Acceleration — ax > +0.4G (เร่งกะทันหัน)
+    [BUG-4 FIX] เดิมอ่าน ay ซึ่งผิดแกน แก้เป็น ax
+    """
 
-    ay = _safe_float(payload.get("ay"))
+    ax = _safe_float(payload.get("ax"))
 
     threshold = _safe_float(
         config.get("threshold_harsh_accel", 0.3)
     )
 
-    if ay > threshold:
+    if ax > threshold:
 
         severity = _calculate_severity(
-            ay,
+            ax,
             threshold
         )
 
@@ -122,17 +142,21 @@ def _detect_harsh_cornering(
         payload: dict,
         config: dict
 ):
+    """
+    FDD v1.4 §10.4: Harsh Cornering — |ay| > 0.4G (เลี้ยวหักโค้ง)
+    [BUG-4 FIX] เดิมอ่าน ax ซึ่งผิดแกน แก้เป็น ay
+    """
 
-    ax = _safe_float(payload.get("ax"))
+    ay = _safe_float(payload.get("ay"))
 
     threshold = _safe_float(
         config.get("threshold_harsh_corner", 0.5)
     )
 
-    if abs(ax) > threshold:
+    if abs(ay) > threshold:
 
         severity = _calculate_severity(
-            abs(ax),
+            abs(ay),
             threshold
         )
 

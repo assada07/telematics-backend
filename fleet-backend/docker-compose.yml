@@ -155,6 +155,19 @@ services:
     restart: unless-stopped
 
 
+    # ────────────────────────────────────────────────────────────
+    # FDD §13 Security — "MQTT username/password per device"
+    # ────────────────────────────────────────────────────────────
+    # TODO (infra, ไม่ใช่ scope ของโค้ดนี้): ตั้งค่า EMQX
+    # Authentication/ACL ให้ตรวจสอบ credential ของแต่ละ device จาก
+    # ตาราง devices.mqtt_username / devices.mqtt_password_hash
+    # (เช่นผ่าน EMQX "Authentication" → PostgreSQL backend หรือ
+    # HTTP auth webhook ที่ query ตาราง devices) แทนการใช้
+    # MQTT_USER/MQTT_PASS ตัวเดียวร่วมกันทุก device ปัจจุบัน
+    # ค่า MQTT_USER/MQTT_PASS ใน .env ยังคงใช้เฉพาะฝั่ง backend
+    # subscriber (คนละบทบาทกับ credential ที่ device ใช้ publish)
+    # ────────────────────────────────────────────────────────────
+
 
     ports:
 
@@ -162,6 +175,10 @@ services:
       - "1884:1883"
 
       - "18084:18083"
+
+      # FDD §13 — "MQTT over TLS 1.2" — TLS listener (เพิ่มใหม่)
+      # ไม่ลบ 1883/1884 (plain) เดิม — ใช้คู่ขนานกันได้
+      - "8883:8883"
 
 
 

@@ -10,13 +10,13 @@ async def update():
     # อัปเดตลง DB
     conn = await asyncpg.connect(
         host="localhost",
-        port=5434,
+        port=5435,
         user="fleet_user",
         password="fleet_pass",
         database="fleet_db"
     )
     await conn.execute(
-        "UPDATE users SET password_hash = $1 WHERE username = 'admin'",
+        "UPDATE users SET hashed_password = $1 WHERE username = 'admin'",
         password_hash
     )
     await conn.close()

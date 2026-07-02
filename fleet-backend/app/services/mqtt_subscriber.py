@@ -23,6 +23,24 @@ FIXES (vs previous version):
 
   [BUG-3] hmac.new() ไม่มีใน Python stdlib
           → แก้เป็น hmac.new() (ถูกต้อง)
+
+  [EVENT-CONFIG-FIX] _DEFAULT_EVENT_CONFIG เดิมเป็น dict คงที่ (hardcode) และ
+          ใช้ key (threshold_brake_g, threshold_accel_g, threshold_corner_g)
+          ไม่ตรงกับ key ที่ event_processor.py อ่าน (threshold_harsh_brake,
+          threshold_harsh_accel, threshold_harsh_corner) ผลคือ threshold จาก
+          Admin ที่ตั้งใน scoring_config_cache (FDD §11.2 / §13 config sync
+          latency < 5s) ไม่เคยถูกใช้เลย → แก้เป็นฟังก์ชัน async
+          get_active_event_config() ที่ query จาก scoring_config_cache จริง
+          พร้อม map key ให้ตรงกับที่ event_processor.py ต้องการ
+
+  [EVENT-STORE-FIX] เดิม store_telemetry() บันทึกคอลัมน์ event/event_severity
+          จาก payload ดิบที่ device ส่งมา (payload.get("event")) ซึ่งเกิดขึ้น
+          ก่อนที่ event_processor.process_event() จะถูกเรียก (Step 4 เดิม)
+          ทำให้ผลตรวจจับฝั่ง Backend ถูกคำนวณแล้วทิ้งไปเฉยๆ ไม่เคยถูกใช้จริง
+          และ trip_manager/score_calculator นำ event ที่ device อ้างเอง
+          ไปคิด driver_score แทน ขัดกับ FDD §11.1 ที่ระบุว่า Event Processor
+          มีหน้าที่ "ตรวจ event" เอง → แก้เป็นเรียก process_event() ก่อน
+          แล้วส่งผลลัพธ์ (enriched event/event_severity) เข้า store_telemetry()
 """
 
 import asyncio
@@ -116,6 +134,8 @@ async def store_telemetry(
     device_id: str,
     vehicle_id: Optional[int],  # ยังคง signature เดิม เพื่อไม่ให้ handle_telemetry() พัง
     payload: dict,
+    event: Optional[str] = None,
+    event_severity: Optional[float] = None,
 ) -> int:
     """
     Insert raw telemetry record into TimescaleDB hypertable.
@@ -124,6 +144,11 @@ async def store_telemetry(
     หมายเหตุ schema: telemetry_raw ไม่มีคอลัมน์ vehicle_id และ created_at
     vehicle_id ถูก lookup แยก แต่ไม่ได้ store ใน raw table
     (join ผ่าน devices.vehicle_id ตอน query แทน)
+
+    [EVENT-STORE-FIX] event/event_severity รับเป็นพารามิเตอร์แยกจากผล
+    event_processor.process_event() แทนการอ่าน payload.get("event") ดิบ
+    เพื่อให้คอลัมน์ event ใน telemetry_raw เป็นผลการตรวจจับจริงของ Backend
+    ตาม FDD §11.1 ไม่ใช่ค่าที่ device อ้างเอง
     """
     # ── Normalize timestamp ──────────────────────────────────────
     # รองรับทั้ง Unix epoch seconds (float/int), milliseconds, และ ISO string
@@ -217,8 +242,8 @@ async def store_telemetry(
             payload.get("gy"),
             payload.get("gz"),
             # ── $21-$23: Events + Ignition ───────────────────
-            payload.get("event") or None,
-            payload.get("event_severity"),
+            event or None,
+            event_severity,
             ignition,
         )
 
@@ -230,16 +255,67 @@ async def store_telemetry(
 
 
 # ──────────────────────────────────────────────────────────────
-# Default event detection config
+# Event detection config — ดึงจาก scoring_config_cache (FDD §11.2)
 # ──────────────────────────────────────────────────────────────
 
-_DEFAULT_EVENT_CONFIG: dict = {
-    "threshold_brake_g":   0.4,
-    "threshold_accel_g":   0.4,
-    "threshold_corner_g":  0.4,
-    "threshold_speed_kmh": 90.0,
-    "threshold_idle_min":  5.0,
+# Fallback เมื่อยังไม่มี active config ใน DB
+# ใช้ค่า default เดียวกับ column DEFAULT ใน scoring_config_cache (FDD §11.2)
+# ยกเว้น threshold_harsh_brake ที่ต้องเป็นค่าติดลบตามทิศทางตรวจจับ (FDD §10.4)
+_FALLBACK_EVENT_CONFIG: dict = {
+    "threshold_harsh_brake":  -0.4,
+    "threshold_harsh_accel":   0.4,
+    "threshold_harsh_corner":  0.4,
+    "threshold_speed_kmh":    90.0,
 }
+
+
+async def get_active_event_config(pool: asyncpg.Pool) -> dict:
+    """
+    [EVENT-CONFIG-FIX]
+
+    ดึง threshold การตรวจจับ harsh event จาก scoring_config_cache ที่
+    is_active = TRUE (ค่าที่ Admin ตั้งผ่าน Odoo แล้ว push เข้ามา ตาม
+    FDD §11.2 / §12.3) แทนการใช้ dict คงที่ในโค้ด
+
+    Map ชื่อคอลัมน์ DB → key ที่ event_processor.py อ่าน:
+        harsh_brake_g    → threshold_harsh_brake   (แปลงเป็นค่าติดลบ
+                            เพราะ FDD §10.4 เช็ค ax < -0.4G)
+        harsh_accel_g    → threshold_harsh_accel   (ax > +0.4G)
+        harsh_corner_g   → threshold_harsh_corner  (|ay| > 0.4G)
+        speeding_kmh_over → threshold_speed_kmh
+    """
+
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT harsh_brake_g, harsh_accel_g, harsh_corner_g, speeding_kmh_over
+            FROM scoring_config_cache
+            WHERE is_active = TRUE
+            LIMIT 1
+            """
+        )
+    except Exception as e:
+        logger.warning(
+            f"[EVENT CONFIG] query scoring_config_cache failed — ใช้ fallback: {e}"
+        )
+        return dict(_FALLBACK_EVENT_CONFIG)
+
+    if not row:
+        logger.warning(
+            "[EVENT CONFIG] ไม่พบ active config ใน scoring_config_cache — ใช้ fallback"
+        )
+        return dict(_FALLBACK_EVENT_CONFIG)
+
+    return {
+        "threshold_harsh_brake":
+            -abs(float(row["harsh_brake_g"] or 0.4)),
+        "threshold_harsh_accel":
+            abs(float(row["harsh_accel_g"] or 0.4)),
+        "threshold_harsh_corner":
+            abs(float(row["harsh_corner_g"] or 0.4)),
+        "threshold_speed_kmh":
+            float(row["speeding_kmh_over"] or 90.0),
+    }
 
 
 # ──────────────────────────────────────────────────────────────
@@ -256,9 +332,12 @@ async def handle_telemetry(
 
     Pipeline:
     1. Lookup vehicle_id from device binding
-    2. Store raw telemetry in telemetry_raw
-    3. Pass to trip_manager.handle_telemetry (trip boundary detection)
-    4. Run event_processor.process_event (harsh event detection)
+    2. Run event_processor.process_event (harsh event detection)
+       ด้วย threshold ที่ query จาก scoring_config_cache จริง
+       [EVENT-CONFIG-FIX / EVENT-STORE-FIX]
+    3. Store raw telemetry ใน telemetry_raw โดยใช้ event/event_severity
+       ที่ตรวจจับได้จาก Step 2 (ไม่ใช่ค่าดิบจาก device)
+    4. Pass to trip_manager.handle_telemetry (trip boundary detection)
     """
     try:
         # ── Step 1: Lookup vehicle ──────────────────────────────
@@ -284,8 +363,29 @@ async def handle_telemetry(
             except Exception as reg_err:
                 logger.warning(f"[TELEMETRY] Auto-register device failed: {reg_err}")
 
-        # ── Step 2: Store raw telemetry ─────────────────────────
-        telemetry_id = await store_telemetry(pool, device_id, vehicle_id, payload)
+        # ── Step 2: Event detection ก่อน store ──────────────────
+        # [EVENT-CONFIG-FIX] threshold มาจาก scoring_config_cache จริง
+        # [EVENT-STORE-FIX] ต้องคำนวณก่อน เพื่อให้ผลตรวจจับถูกบันทึกจริง
+        event_config = await get_active_event_config(pool)
+
+        enriched = ep_process_event(
+            payload={**payload, "device_id": device_id},
+            config=event_config,
+        )
+
+        if enriched.get("event"):
+            logger.info(
+                f"[EVENT] device={device_id} "
+                f"event={enriched['event']} "
+                f"severity={enriched.get('event_severity'):.2f}"
+            )
+
+        # ── Step 3: Store raw telemetry (ใช้ event ที่ตรวจจับได้จริง) ─
+        telemetry_id = await store_telemetry(
+            pool, device_id, vehicle_id, payload,
+            event=enriched.get("event") or None,
+            event_severity=enriched.get("event_severity"),
+        )
 
         logger.info(
             f"[TELEMETRY STORED] id={telemetry_id} "
@@ -295,23 +395,10 @@ async def handle_telemetry(
             f"ignition={payload.get('ignition')}"
         )
 
-        # ── Step 3: Trip detection (requires vehicle binding) ───
+        # ── Step 4: Trip detection (requires vehicle binding) ───
         if vehicle_id is not None:
             payload_with_device = {**payload, "device_id": device_id}
             await trip_handle_telemetry(pool=pool, payload=payload_with_device)
-
-        # ── Step 4: Event detection (pure function, always runs) ─
-        enriched = ep_process_event(
-            payload={**payload, "device_id": device_id},
-            config=_DEFAULT_EVENT_CONFIG,
-        )
-
-        if enriched.get("event"):
-            logger.info(
-                f"[EVENT] device={device_id} "
-                f"event={enriched['event']} "
-                f"severity={enriched.get('event_severity'):.2f}"
-            )
 
     except Exception as e:
         logger.error(

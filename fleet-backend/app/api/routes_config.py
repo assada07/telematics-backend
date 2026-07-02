@@ -1,5 +1,10 @@
 # app/api/routes_config.py — FIXED VERSION
 # 🔴 CRITICAL FIX #1: Add 409 Conflict validation for device-vehicle binding
+# 🔴 CRITICAL FIX #2 (14:42): Add device_id format validation (KTC-XXX)
+#     ป้องกันกรณีที่มีคน/ระบบส่ง device_id ผิด format เช่น "1" เข้ามา
+#     แล้วไป bind กับ vehicle ทำให้ lookup_vehicle_id() ใน mqtt_subscriber.py
+#     หา device_id ไม่เจอ (เพราะ ESP32 ส่งมาเป็น "KTC-001" จริง) → vehicle_id=None
+#     → trip/event processing ถูกข้ามทั้งหมด
 
 """
 Device Configuration & Management Endpoints
@@ -11,8 +16,9 @@ Handles:
 - Scoring config (push from Odoo)
 """
 
+import re
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 import asyncpg
 from typing import List, Optional
 from datetime import datetime
@@ -20,6 +26,37 @@ from datetime import datetime
 from app.database import get_db_pool
 
 router = APIRouter(prefix="/api/v1", tags=["Config"])
+
+# ─────────────────────────────────────────────────────────────
+# Device ID Format Validation
+# ─────────────────────────────────────────────────────────────
+# รูปแบบมาตรฐานตาม FDD v1.4 / mock_hardware_stream.py / ESP32 firmware
+# ตัวอย่างที่ถูกต้อง: KTC-001, KTC-002, KTC-099, KTC-123
+DEVICE_ID_PATTERN = re.compile(r"^KTC-\d{3}$")
+
+
+def _validate_device_id_format(v: str, field_name: str = "device_id") -> str:
+    """
+    ตรวจสอบและ normalize device_id ให้ตรง format KTC-XXX เสมอ
+
+    ป้องกัน:
+    - device_id ที่เป็นตัวเลขล้วน เช่น "1" (สาเหตุของ bug binding ผิดที่เคยเกิด)
+    - device_id ที่พิมพ์ผิด case หรือมีช่องว่างเกิน
+    - device_id ที่ความยาวไม่ตรง (ต้องเป็น KTC- ตามด้วยเลข 3 หลัก)
+    """
+    if v is None:
+        return v
+
+    cleaned = v.strip().upper()
+
+    if not DEVICE_ID_PATTERN.match(cleaned):
+        raise ValueError(
+            f"{field_name} ต้องเป็นรูปแบบ KTC-XXX เท่านั้น "
+            f"(เช่น KTC-001, KTC-002) — ได้รับค่า: '{v}'"
+        )
+
+    return cleaned
+
 
 # ─────────────────────────────────────────────────────────────
 # Pydantic Models
@@ -30,6 +67,11 @@ class RegisterDeviceRequest(BaseModel):
     device_id: str
     device_name: str
     vehicle_id: int
+
+    @field_validator("device_id")
+    @classmethod
+    def validate_device_id(cls, v: str) -> str:
+        return _validate_device_id_format(v, "device_id")
 
 
 class RegisterDeviceBatchRequest(BaseModel):
@@ -43,6 +85,19 @@ class VehicleConfigUpdate(BaseModel):
     new_device_id: str
     old_device_id: Optional[str] = None  # Explicitly provide to ensure
     driver_id: Optional[int] = None      # รหัสคนขับ (ดึงจาก Odoo)
+
+    @field_validator("new_device_id")
+    @classmethod
+    def validate_new_device_id(cls, v: str) -> str:
+        return _validate_device_id_format(v, "new_device_id")
+
+    @field_validator("old_device_id")
+    @classmethod
+    def validate_old_device_id(cls, v: Optional[str]) -> Optional[str]:
+        # old_device_id เป็น optional — ถ้าไม่ส่งมาก็ไม่ต้อง validate
+        if v is None or v == "":
+            return None
+        return _validate_device_id_format(v, "old_device_id")
 
 
 class ScoringConfigRequest(BaseModel):
@@ -75,30 +130,34 @@ async def _register_single(
 ) -> dict:
     """
     Register single device-to-vehicle binding
-    
+
     🔴 CRITICAL FIX:
     - Check if EXACT binding (device + vehicle) already exists → 409
     - Check if device already bound to DIFFERENT vehicle → 409
     - Enforce 1-to-1 relationship
-    
+
+    หมายเหตุ: device_id ผ่านการ validate format (KTC-XXX) มาแล้วจาก
+    Pydantic model ตอนรับ request ดังนั้นไม่ต้อง .upper() ซ้ำที่นี่
+    แต่ใส่ไว้เผื่อความปลอดภัย (defense in depth)
+
     Args:
         conn: Database connection
         item: RegisterDeviceRequest
-        
+
     Returns:
         dict with status, device_id, vehicle_id
-        
+
     Raises:
         HTTPException(409): If conflict detected
     """
-    
+
     device_id = item.device_id.strip().upper()
     vehicle_id = item.vehicle_id
-    
+
     # ─────────────────────────────────────────────
     # ✅ Step 1: Check exact binding already exists
     # ─────────────────────────────────────────────
-    
+
     existing_same_binding = await conn.fetchrow(
         """
         SELECT vehicle_id FROM update_status 
@@ -106,7 +165,7 @@ async def _register_single(
         """,
         device_id, vehicle_id
     )
-    
+
     if existing_same_binding:
         # 🔴 CONFLICT: Device already bound to THIS vehicle
         raise HTTPException(
@@ -116,11 +175,11 @@ async def _register_single(
                 f"No changes made."
             )
         )
-    
+
     # ─────────────────────────────────────────────
     # ✅ Step 2: Check if device bound to DIFFERENT vehicle
     # ─────────────────────────────────────────────
-    
+
     existing_other_binding = await conn.fetchrow(
         """
         SELECT vehicle_id FROM update_status 
@@ -128,7 +187,7 @@ async def _register_single(
         """,
         device_id, vehicle_id
     )
-    
+
     if existing_other_binding:
         # 🔴 CONFLICT: Device already bound to another vehicle
         other_vehicle_id = existing_other_binding['vehicle_id']
@@ -139,11 +198,11 @@ async def _register_single(
                 f"Use PUT /config/vehicle to migrate."
             )
         )
-    
+
     # ─────────────────────────────────────────────
     # ✅ Step 3: Check if vehicle already has device
     # ─────────────────────────────────────────────
-    
+
     existing_vehicle_device = await conn.fetchrow(
         """
         SELECT device_id FROM update_status 
@@ -151,7 +210,7 @@ async def _register_single(
         """,
         vehicle_id, device_id
     )
-    
+
     if existing_vehicle_device:
         # 🔴 CONFLICT: Vehicle already has different device (1-to-1 violation)
         other_device_id = existing_vehicle_device['device_id']
@@ -162,11 +221,11 @@ async def _register_single(
                 f"Cannot bind to {device_id}. Use PUT /config/vehicle to replace."
             )
         )
-    
+
     # ─────────────────────────────────────────────
     # ✅ Step 4: All checks passed — Register binding
     # ─────────────────────────────────────────────
-    
+
     try:
         await conn.execute(
             """
@@ -177,7 +236,7 @@ async def _register_single(
             """,
             device_id, vehicle_id
         )
-        
+
         await conn.execute(
             """
             INSERT INTO update_status (vehicle_id, device_id, date_update_latest)
@@ -187,14 +246,14 @@ async def _register_single(
             """,
             vehicle_id, device_id
         )
-        
+
         return {
             "status": "success",
             "device_id": device_id,
             "vehicle_id": vehicle_id,
             "registered_at": datetime.utcnow().isoformat()
         }
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -225,7 +284,7 @@ async def get_devices(pool: asyncpg.Pool = Depends(get_db_pool)):
             ]
         }
     """
-    
+
     try:
         devices = await pool.fetch(
             """
@@ -234,12 +293,12 @@ async def get_devices(pool: asyncpg.Pool = Depends(get_db_pool)):
             ORDER BY id ASC
             """
         )
-        
+
         return {
             "total": len(devices),
             "devices": [dict(d) for d in devices]
         }
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -255,10 +314,10 @@ async def get_device_config(
 ):
     """
     Get current binding status of a device
-    
+
     Query Params:
         device_id: Device ID (e.g., "KTC-001")
-    
+
     Returns:
         {
             "device_id": "KTC-001",
@@ -268,7 +327,14 @@ async def get_device_config(
             "date_update_latest": "2026-06-14T15:30:00Z"
         }
     """
-    
+
+    # หมายเหตุ: endpoint นี้เป็น GET query param ไม่ใช่ Pydantic body
+    # จึง validate format ตรงนี้แทน เพื่อกัน garbage lookup ด้วย
+    try:
+        device_id = _validate_device_id_format(device_id, "device_id")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
     try:
         row = await pool.fetchrow(
             """
@@ -281,12 +347,12 @@ async def get_device_config(
             LEFT JOIN update_status u ON d.id = u.device_id
             WHERE d.id = $1
             """,
-            device_id.upper()
+            device_id
         )
-        
+
         if not row:
             raise HTTPException(status_code=404, detail="Device not found")
-        
+
         return {
             "device_id": row['device_id'],
             "vehicle_id": row['vehicle_id'],
@@ -294,7 +360,7 @@ async def get_device_config(
             "status": "active" if row['active'] else "inactive",
             "date_update_latest": row['date_update_latest']
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -312,29 +378,31 @@ async def register_device_single(
 ):
     """
     Register single device-to-vehicle binding
-    
+
     Request Body:
         {
             "device_id": "KTC-001",
             "device_name": "Device 1",
             "vehicle_id": 101
         }
-    
+
     Returns:
         201 Created with binding details
         409 Conflict if duplicate/conflict detected
-    
+        422 Unprocessable Entity if device_id format ผิด (ไม่ใช่ KTC-XXX)
+
     Errors:
         - 404: Vehicle not found
         - 409: Duplicate binding or 1-to-1 violation
+        - 422: device_id format ไม่ถูกต้อง
         - 500: Database error
     """
-    
+
     try:
         async with pool.acquire() as conn:
             register_result = await _register_single(conn, request)
             return register_result
-            
+
     except HTTPException:
         raise
     except Exception as e:
@@ -352,7 +420,7 @@ async def register_device_batch(
 ):
     """
     Register multiple devices in batch (All-or-Nothing transaction)
-    
+
     Request Body:
         {
             "devices": [
@@ -361,7 +429,7 @@ async def register_device_batch(
                 ...
             ]
         }
-    
+
     Returns:
         201 Created with:
         {
@@ -372,35 +440,39 @@ async def register_device_batch(
                 ...
             ]
         }
-    
+
     Note:
-        If any device conflicts, ENTIRE transaction rolls back (all-or-nothing)
+        - ทุก device_id ใน list ถูก validate format (KTC-XXX) ตั้งแต่ตอนรับ
+          request (Pydantic) — ถ้ามีตัวใดผิด format จะโดน 422 ทั้ง batch
+          ก่อนแม้แต่จะเริ่ม transaction
+        - ถ้ามี device ใด conflict ระหว่างประมวลผล ENTIRE transaction
+          rolls back (all-or-nothing)
     """
-    
+
     if not request.devices:
         raise HTTPException(status_code=400, detail="No devices provided")
-    
+
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():  # ✅ All-or-Nothing
-                
+
                 results = []
-                
+
                 for item in request.devices:
                     try:
                         batch_item_result = await _register_single(conn, item)
                         results.append(batch_item_result)
-                        
+
                     except HTTPException as e:
                         # Re-raise to trigger rollback
                         raise
-                
+
                 return {
                     "status": "success",
                     "registered": len(results),
                     "results": results
                 }
-                
+
     except HTTPException:
         raise
     except Exception as e:
@@ -427,19 +499,25 @@ async def update_vehicle_config(
 
     Body:
         vehicle_id   : int  — รหัสรถ
-        new_device_id: str  — รหัสบอร์ดใหม่
-        old_device_id: str? — optional safety check
+        new_device_id: str  — รหัสบอร์ดใหม่ (ต้องเป็นรูปแบบ KTC-XXX)
+        old_device_id: str? — optional safety check (ต้องเป็นรูปแบบ KTC-XXX ถ้าส่งมา)
 
     Returns:
-        status: "registered" | "no_change" | "migrated"
+        status: "registered" | "no_change" | "driver_updated" | "migrated"
+
+    Raises:
+        422: ถ้า new_device_id หรือ old_device_id ไม่ตรงรูปแบบ KTC-XXX
+             (กันไม่ให้เกิด binding ผิดแบบที่เคยเจอ เช่น device_id="1")
     """
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
 
                 vehicle_id    = request.vehicle_id
-                new_device_id = request.new_device_id.upper()
-                old_device_id = request.old_device_id.upper() if request.old_device_id else None
+                # device_id ผ่าน validation/normalize (.strip().upper()) จาก
+                # Pydantic field_validator มาแล้ว ใช้ได้ตรงๆ
+                new_device_id = request.new_device_id
+                old_device_id = request.old_device_id
 
                 # ── 1. หาบอร์ดและ driver ปัจจุบันของรถคันนี้ ────────────
                 current = await conn.fetchrow(
@@ -585,7 +663,7 @@ async def get_current_scoring_config(
     Returns:
         Scoring config with all weights and thresholds
     """
-    
+
     try:
         config = await pool.fetchrow(
             """
@@ -601,13 +679,13 @@ async def get_current_scoring_config(
             LIMIT 1
             """
         )
-        
+
         if not config:
             raise HTTPException(status_code=404, detail="No active config found")
-        
+
         return {k: round(v, 4) if isinstance(v, float) else v
                 for k, v in dict(config).items()}
-        
+
     except HTTPException:
         raise
     except Exception as e:

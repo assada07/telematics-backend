@@ -11,12 +11,19 @@ CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
 -- =============================================================
 
 CREATE TABLE IF NOT EXISTS devices (
-    id              VARCHAR(20)     PRIMARY KEY,
-    vehicle_id      INTEGER         UNIQUE NULL,   -- 1-to-1 binding, NULL = ยังไม่ผูกรถ
-    active          BOOLEAN         DEFAULT true,
-    firmware_ver    VARCHAR(50),
-    registered_at   TIMESTAMPTZ     DEFAULT NOW(),
-    driver_id       INTEGER                        -- FK → Odoo hr.employee.id (cache คนขับปัจจุบัน)
+    id                   VARCHAR(20)     PRIMARY KEY,
+    vehicle_id           INTEGER         UNIQUE NULL,   -- 1-to-1 binding, NULL = ยังไม่ผูกรถ
+    active               BOOLEAN         DEFAULT true,
+    firmware_ver         VARCHAR(50),
+    registered_at        TIMESTAMPTZ     DEFAULT NOW(),
+    driver_id            INTEGER,                       -- FK → Odoo hr.employee.id (cache คนขับปัจจุบัน)
+
+    -- FDD §13 Security: "MQTT username/password per device"
+    -- คอลัมน์ใหม่ NULL ได้ทั้งคู่ → ไม่กระทบ INSERT/SELECT เดิมใน routes_config.py
+    -- ที่ไม่ได้ระบุค่าคอลัมน์นี้ (เช่น _register_single(), PUT /config/vehicle)
+    -- ค่าจริงต้องถูกสร้าง/หมุนเวียนแยกต่างหาก (ไม่ generate ในไฟล์นี้)
+    mqtt_username        VARCHAR(50),                   -- per-device MQTT username (FDD §13)
+    mqtt_password_hash   VARCHAR(255)                   -- per-device MQTT password (เก็บเป็น hash เท่านั้น, FDD §13)
 );
 
 CREATE INDEX IF NOT EXISTS idx_devices_vehicle_id
@@ -80,7 +87,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
     created_by  INTEGER         REFERENCES users(id) ON DELETE SET NULL,
     is_active   BOOLEAN         DEFAULT true,
     created_at  TIMESTAMPTZ     DEFAULT NOW(),
-    last_used   TIMESTAMPTZ
+    last_used   TIMESTAMPTZ,
+    scope       VARCHAR(20)     DEFAULT 'general'
 );
 
 -- =============================================================
@@ -312,10 +320,14 @@ INSERT INTO scoring_config_cache (
 ) ON CONFLICT DO NOTHING;
 
 -- Seed devices KTC-001 ถึง KTC-010 (ยังไม่ผูกรถ)
-INSERT INTO devices (id, vehicle_id, active)
+-- mqtt_username / mqtt_password_hash เป็น placeholder เท่านั้น (FDD §13)
+-- ต้องถูกแทนที่ด้วยค่าจริงก่อนใช้งานจริง — ห้ามใช้ค่านี้ใน production
+INSERT INTO devices (id, vehicle_id, active, mqtt_username, mqtt_password_hash)
 SELECT
     'KTC-' || LPAD(n::TEXT, 3, '0'),
     NULL,
-    true
+    true,
+    'KTC-' || LPAD(n::TEXT, 3, '0'),   -- mqtt_username = device id (placeholder)
+    'PLACEHOLDER_HASH_CHANGE_ME'        -- mqtt_password_hash (placeholder — ต้อง rotate ก่อนใช้จริง)
 FROM generate_series(1, 10) AS n
 ON CONFLICT DO NOTHING;

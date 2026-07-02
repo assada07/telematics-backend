@@ -347,17 +347,17 @@ def calculate_advanced_trip_score(
     all_exempt = (
         config.get(
             "enable_traffic_jam_exemption",
-            True
+            False
         )
         or
         config.get(
             "enable_warehouse_idling_exemption",
-            True
+            False
         )
         or
         config.get(
             "enable_night_rest_exemption",
-            True
+            False
         )
     )
 

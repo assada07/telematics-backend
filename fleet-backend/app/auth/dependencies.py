@@ -114,7 +114,7 @@ async def verify_odoo_api_key(api_key: str = Security(api_key_header)):
         key_data = await get_api_key(conn, api_key)
         if not key_data:
             raise HTTPException(status_code=401, detail="API Key ไม่ถูกต้อง")
-        if key_data["scope"] not in ("odoo", "admin"):
+        if key_data.get("scope", "general") not in ("odoo", "admin"):
             raise HTTPException(status_code=403, detail="API Key นี้ไม่มีสิทธิ์เรียก Odoo endpoint")
 
     return key_data
