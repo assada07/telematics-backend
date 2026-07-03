@@ -41,8 +41,8 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-import app.services.mqtt_subscriber as mqtt_subscriber
-from app.services.mqtt_subscriber import (
+import app.services.mqtt_subscriber as mqtt_subscriber  # noqa: E402
+from app.services.mqtt_subscriber import (  # noqa: E402
     verify_hmac,
     lookup_vehicle_id,
     get_event_detection_config,
@@ -54,7 +54,6 @@ from app.services.mqtt_subscriber import (
     is_mqtt_connected,
     _FALLBACK_EVENT_CONFIG,
 )
-
 
 
 @pytest.fixture(autouse=True)

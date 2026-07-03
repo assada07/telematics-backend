@@ -39,8 +39,8 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-import app.services.trip_manager as trip_manager
-from app.services.trip_manager import (
+import app.services.trip_manager as trip_manager  # noqa: E402
+from app.services.trip_manager import (  # noqa: E402
     get_active_scoring_config,
     _haversine_km,
     _estimate_fuel,
@@ -51,7 +51,6 @@ from app.services.trip_manager import (
     DEVICE_LOCKS,
     TRIP_END_TASKS,
 )
-
 
 
 # ── Fixture: reset module-level per-device state between tests ─────

@@ -36,7 +36,7 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from app.services.event_processor import (
+from app.services.event_processor import (  # noqa: E402
     filter_imu_noise_event,
     _safe_float,
     _calculate_severity,

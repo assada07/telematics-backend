@@ -26,7 +26,7 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from app.services.score_calculator import calculate_advanced_trip_score
+from app.services.score_calculator import calculate_advanced_trip_score  # noqa: E402
 
 DEFAULT_CONFIG = {
     "score_base": 100.0,
