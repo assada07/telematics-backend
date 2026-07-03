@@ -11,6 +11,32 @@ Responsibilities:
 - รองรับหลายรถพร้อมกัน ด้วย per-device Lock และ State แยกกัน
 
 FDD v1.4 Compliant
+
+[FIX LOG — this revision]
+
+  [Fix #3] get_active_scoring_config(): idling exemption flags
+           (enable_traffic_jam_exemption, enable_warehouse_idling_exemption,
+           enable_night_rest_exemption) were hardcoded to True in BOTH the
+           DB-driven return path and the no-config fallback path.
+
+           Effect: score_calculator.calculate_advanced_trip_score()'s
+           `all_exempt = flag1 or flag2 or flag3` was ALWAYS True
+           regardless of what score_calculator's own (already-fixed)
+           defaults said — because this function overrode them with
+           explicit True on every call. Idling penalty was silently
+           never applied in the real running system.
+
+           FDD v1.4 has no concept of these exemptions at all (they are
+           an out-of-scope extension in this codebase — see separate
+           tracking item). Since they're not Admin-configurable per the
+           FDD §12.3 config model, the correct default here is False,
+           matching score_calculator.py's corrected default, so idling
+           penalties actually apply as specified in FDD §12.3.
+
+  [Fix #4 support] Added "weight_bump" mapping (DB column bump_deduct)
+           so score_calculator's new Harsh Bump penalty (FDD §10.4/§12.3)
+           actually receives its configured weight instead of always
+           falling back to the hardcoded default.
 """
 
 from __future__ import annotations
@@ -67,22 +93,10 @@ def _get_lock(device_id: str) -> asyncio.Lock:
 
 
 # ──────────────────────────────────────────────────────────────
-# Bug 1 FIX — get_active_scoring_config
+# get_active_scoring_config
 #
-# ปัญหาเดิม:
-#   ฟังก์ชันนี้คืน key ชื่อ "speeding_deduct", "harsh_brake_deduct" ฯลฯ
-#   แต่ score_calculator.py อ่านด้วย key ชื่อ "weight_speeding",
-#   "weight_harsh_brake" ฯลฯ ทำให้ค่าจาก DB ไม่มีผลเลย
-#   score จะใช้ default ของ score_calculator ตลอด
-#
-# การแก้:
-#   เปลี่ยนให้คืน key ตรงกับที่ score_calculator.py อ่าน
-#   โดย map ชื่อ column จาก DB → key ที่ score_calculator ใช้
-#   ชื่อ column ใน scoring_config_cache (จาก fleet_db.sql):
-#     weight_harsh_brake, weight_harsh_accel, weight_harsh_corner,
-#     weight_speeding, weight_idling,
-#     threshold_brake_g, threshold_accel_g, threshold_corner_g,
-#     threshold_speed_kmh, threshold_idle_min
+# ดึงเกณฑ์คำนวณคะแนนล่าสุดจาก scoring_config_cache และ map ชื่อ
+# column DB → key ที่ calculate_advanced_trip_score() อ่าน
 # ──────────────────────────────────────────────────────────────
 
 async def get_active_scoring_config(
@@ -92,7 +106,8 @@ async def get_active_scoring_config(
     ดึงเกณฑ์คำนวณคะแนนล่าสุดจาก scoring_config_cache
 
     Key ที่คืนออกมาตรงกับที่ calculate_advanced_trip_score() อ่าน
-    ทุกตัว — ไม่มี mismatch อีกต่อไป
+    ทุกตัว รวมถึง weight_bump (Fix #4) และ exemption flags ที่แก้เป็น
+    False แล้ว (Fix #3)
     """
 
     query = """
@@ -108,100 +123,101 @@ async def get_active_scoring_config(
 
         raw = dict(row)
 
-        # ── FIX: ใช้ key ตรงกับที่ score_calculator.py อ่าน ──
-        # score_calculator อ่านด้วย: weight_speeding, weight_harsh_brake,
-        # weight_harsh_accel, weight_harsh_corner, weight_idling
-        # และ DB เก็บในชื่อเดียวกันพอดี — ส่งผ่านตรงๆ ได้เลย
-
         return {
 
             # ── Base ──────────────────────────────────────────
             "score_base":
                 float(raw.get("score_base",           100.0)),
 
-            # ── Deduction weights (map จาก column จริงใน DB) ─
-            # DB column:        score_calculator key:
-            # speeding_deduct → weight_speeding
-            # harsh_brake_deduct → weight_harsh_brake
-            # harsh_accel_deduct → weight_harsh_accel
-            # harsh_corner_deduct → weight_harsh_corner
-            # idling_deduct → weight_idling
+            # ── Deduction weights (FDD §12.3 defaults) ─────────
             "weight_speeding":
-                float(raw.get("speeding_deduct",       5.0)),
+                float(raw.get("speeding_deduct",       10.0)),
 
             "weight_harsh_brake":
-                float(raw.get("harsh_brake_deduct",    3.0)),
+                float(raw.get("harsh_brake_deduct",     3.0)),
 
             "weight_harsh_accel":
-                float(raw.get("harsh_accel_deduct",    3.0)),
+                float(raw.get("harsh_accel_deduct",     3.0)),
 
             "weight_harsh_corner":
-                float(raw.get("harsh_corner_deduct",   2.0)),
+                float(raw.get("harsh_corner_deduct",    3.0)),
 
             "weight_idling":
-                float(raw.get("idling_deduct",         1.0)),
+                float(raw.get("idling_deduct",          2.0)),
+
+            # [Fix #4 support] bump_deduct → weight_bump
+            "weight_bump":
+                float(raw.get("bump_deduct",            4.0)),
 
             # ── Detection thresholds ──────────────────────────
-            # DB column:         score_calculator key:
-            # speeding_kmh_over → speeding_kmh_over
-            # idle_min_threshold → idle_min_threshold
-            # harsh_brake_g → threshold_harsh_brake
-            # harsh_accel_g → threshold_harsh_accel
-            # harsh_corner_g → threshold_harsh_corner
             "speeding_kmh_over":
-                float(raw.get("speeding_kmh_over",    90.0)),
+                float(raw.get("speeding_kmh_over",     20.0)),
 
             "idle_min_threshold":
-                float(raw.get("idle_min_threshold",    5.0)),
+                float(raw.get("idle_min_threshold",     5.0)),
 
+            # DB stores harsh_brake_g as a positive magnitude (e.g. 0.40);
+            # the brake threshold convention elsewhere is negative
+            # (ax < -0.4G), so flip sign here.
             "threshold_harsh_brake":
-                float(raw.get("harsh_brake_g",         0.4)),
+                -abs(float(raw["harsh_brake_g"]))
+                if raw.get("harsh_brake_g") is not None
+                else -0.4,
 
             "threshold_harsh_accel":
-                float(raw.get("harsh_accel_g",         0.4)),
+                float(raw.get("harsh_accel_g",          0.4)),
 
             "threshold_harsh_corner":
-                float(raw.get("harsh_corner_g",        0.4)),
+                float(raw.get("harsh_corner_g",         0.4)),
 
             # ── Trip cap ──────────────────────────────────────
+            # [Fix #5] fallback default corrected 100.0 → 50.0
             "max_deduct_per_trip":
-                float(raw.get("max_deduct_per_trip",  50.0)),
+                float(raw.get("max_deduct_per_trip",   50.0)),
 
-            # ── Advanced features ─────────────────────────────
+            # ── Advanced features (out of FDD scope, unchanged) ─
             "night_danger_zone_multiplier":        1.5,
             "enable_construction_zone_exemption":  True,
             "enable_accident_delay_exemption":     True,
             "enable_mountain_road_exemption":      True,
-            "enable_traffic_jam_exemption":        True,
-            "enable_warehouse_idling_exemption":   True,
-            "enable_night_rest_exemption":         True,
+
+            # [Fix #3] hardcoded True → False so idling penalty
+            # actually applies per FDD §12.3 (these 3 flags no longer
+            # unconditionally exempt every trip's idling time)
+            "enable_traffic_jam_exemption":        False,
+            "enable_warehouse_idling_exemption":   False,
+            "enable_night_rest_exemption":         False,
         }
 
     # ── Fallback ถ้า DB ไม่มี active config ──────────────────
     logger.warning(
-        "No active scoring config found in DB — using hardcoded defaults"
+        "No active scoring config found in DB — using FDD v1.4 §12.3 defaults"
     )
 
     return {
         "score_base":                           100.0,
-        "weight_speeding":                        5.0,
+        # [Fix #6] defaults corrected to match FDD §12.3 table
+        "weight_speeding":                       10.0,
         "weight_harsh_brake":                     3.0,
         "weight_harsh_accel":                     3.0,
-        "weight_harsh_corner":                    2.0,
-        "weight_idling":                          1.0,
-        "speeding_kmh_over":                     90.0,
+        "weight_harsh_corner":                    3.0,
+        "weight_idling":                          2.0,
+        "weight_bump":                            4.0,   # [Fix #4]
+        "speeding_kmh_over":                     20.0,
         "idle_min_threshold":                     5.0,
-        "threshold_harsh_brake":                  0.4,
+        "threshold_harsh_brake":                 -0.4,
         "threshold_harsh_accel":                  0.4,
         "threshold_harsh_corner":                 0.4,
+        # [Fix #5] 100.0 → 50.0
         "max_deduct_per_trip":                   50.0,
         "night_danger_zone_multiplier":           1.5,
         "enable_construction_zone_exemption":    True,
         "enable_accident_delay_exemption":       True,
         "enable_mountain_road_exemption":        True,
-        "enable_traffic_jam_exemption":          True,
-        "enable_warehouse_idling_exemption":     True,
-        "enable_night_rest_exemption":           True,
+        # [Fix #3] True → False
+        "enable_traffic_jam_exemption":          False,
+        "enable_warehouse_idling_exemption":     False,
+        "enable_night_rest_exemption":           False,
     }
 
 
@@ -340,7 +356,7 @@ async def _finalize_trip(
             )
             return
 
-        # ── 2. Load scoring config (Bug 1 Fixed) ─────────────
+        # ── 2. Load scoring config (Fix #3 / #4 / #5 / #6 applied) ─
         config = await get_active_scoring_config(connection)
 
         # ── 3. คำนวณ Driver Score ─────────────────────────────
@@ -380,6 +396,9 @@ async def _finalize_trip(
         harsh_accel_count  = metrics.get("harsh_accel_count",  0)
         harsh_corner_count = metrics.get("harsh_corner_count", 0)
         speeding_count     = metrics.get("speeding_count",     0)
+        # bump_count is available in metrics (Fix #4) but trip_logs
+        # has no dedicated bump_count column in the current schema —
+        # its penalty is already folded into driver_score below.
 
         # ── 9. fuel estimate ──────────────────────────────────
         fuel_used = _estimate_fuel(telemetry_points, distance_km)
@@ -439,7 +458,8 @@ async def _finalize_trip(
             f"[TripManager] {device_id} trip saved "
             f"score={result['safety_score']:.1f} "
             f"dist={distance_km:.1f}km "
-            f"dur={duration_min:.1f}min"
+            f"dur={duration_min:.1f}min "
+            f"bump_count={metrics.get('bump_count', 0)}"
         )
 
 

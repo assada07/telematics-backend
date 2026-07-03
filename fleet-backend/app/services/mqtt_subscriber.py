@@ -9,8 +9,9 @@ Responsibilities:
 - Verify HMAC signature (optional)
 - Parse and validate payload
 - Lookup vehicle_id from device binding
-- Store in telemetry_raw
-- Trigger downstream processing (trip manager, event processor)
+- Run server-side harsh-event detection (FDD §10.4/§12.3, config-driven)
+- Store the ENRICHED record in telemetry_raw
+- Trigger downstream processing (trip manager)
 
 FDD v1.4 Compliant
 
@@ -24,23 +25,39 @@ FIXES (vs previous version):
   [BUG-3] hmac.new() ไม่มีใน Python stdlib
           → แก้เป็น hmac.new() (ถูกต้อง)
 
-  [EVENT-CONFIG-FIX] _DEFAULT_EVENT_CONFIG เดิมเป็น dict คงที่ (hardcode) และ
-          ใช้ key (threshold_brake_g, threshold_accel_g, threshold_corner_g)
-          ไม่ตรงกับ key ที่ event_processor.py อ่าน (threshold_harsh_brake,
-          threshold_harsh_accel, threshold_harsh_corner) ผลคือ threshold จาก
-          Admin ที่ตั้งใน scoring_config_cache (FDD §11.2 / §13 config sync
-          latency < 5s) ไม่เคยถูกใช้เลย → แก้เป็นฟังก์ชัน async
-          get_active_event_config() ที่ query จาก scoring_config_cache จริง
-          พร้อม map key ให้ตรงกับที่ event_processor.py ต้องการ
+  [FIX #1 — this revision] Event detection ordering
+          เดิม: store_telemetry() insert ค่า event ที่ ESP32 ส่งมาเอง
+                (client-decided) แล้ว ep_process_event() คำนวณ event
+                จาก server-side config อีกที แต่ผลลัพธ์ "enriched" นั้น
+                ถูกทิ้ง (แค่ log) ไม่เคยเขียนกลับ DB เลย
+                → harsh event ที่ server ตรวจสอบเองไม่เคยถูกบันทึกจริง
+                  ขัดกับ FDD §12.3 ที่ต้องให้ server (ไม่ใช่ client)
+                  เป็นผู้ตัดสิน event เพราะ Admin ปรับ threshold ผ่าน
+                  config ได้แบบ real-time
 
-  [EVENT-STORE-FIX] เดิม store_telemetry() บันทึกคอลัมน์ event/event_severity
-          จาก payload ดิบที่ device ส่งมา (payload.get("event")) ซึ่งเกิดขึ้น
-          ก่อนที่ event_processor.process_event() จะถูกเรียก (Step 4 เดิม)
-          ทำให้ผลตรวจจับฝั่ง Backend ถูกคำนวณแล้วทิ้งไปเฉยๆ ไม่เคยถูกใช้จริง
-          และ trip_manager/score_calculator นำ event ที่ device อ้างเอง
-          ไปคิด driver_score แทน ขัดกับ FDD §11.1 ที่ระบุว่า Event Processor
-          มีหน้าที่ "ตรวจ event" เอง → แก้เป็นเรียก process_event() ก่อน
-          แล้วส่งผลลัพธ์ (enriched event/event_severity) เข้า store_telemetry()
+          แก้ไข: สลับลำดับ — เรียก ep_process_event() ก่อน แล้ว merge
+                 ผลลัพธ์ (event, event_severity) เข้า payload ก่อนค่อย
+                 เรียก store_telemetry() ครั้งเดียว ด้วย payload ที่
+                 ถูก enrich แล้ว
+
+  [FIX #2 — this revision] Config key mismatch
+          เดิม: _DEFAULT_EVENT_CONFIG เป็น dict คงที่ในไฟล์นี้ ใช้ชื่อ
+                key (threshold_brake_g, threshold_accel_g,
+                threshold_corner_g) ที่ "ไม่ตรง" กับชื่อ key ที่
+                event_processor.py อ่านจริง (threshold_harsh_brake,
+                threshold_harsh_accel, threshold_harsh_corner) ทำให้
+                ค่า config ที่ตั้งใจจะส่งเข้าไปไม่มีผลอะไรเลย —
+                event_processor จะ fallback ไปใช้ default ของตัวเอง
+                เสมอ ซึ่งตอนนั้นยังไม่ตรงกับ FDD §12.3 ด้วย
+                (-0.4 / 0.3 / 0.5 แทนที่จะเป็น -0.4 / 0.4 / 0.4)
+
+          แก้ไข: ลบ _DEFAULT_EVENT_CONFIG ทิ้ง แล้วดึง active scoring
+                 config จริงจาก DB (scoring_config_cache) ทุกครั้ง ผ่าน
+                 get_event_detection_config() ซึ่ง map ชื่อ column DB
+                 → key ที่ event_processor.py อ่านโดยตรง (ชื่อเดียวกัน
+                 กับที่ trip_manager.get_active_scoring_config() ใช้
+                 สำหรับ score_calculator ด้วย เพื่อไม่ให้ config สอง
+                 จุดในระบบ drift ออกจากกันอีก)
 """
 
 import asyncio
@@ -58,6 +75,7 @@ from app.config import settings
 from app.database import get_db_pool
 from app.services.trip_manager import handle_telemetry as trip_handle_telemetry
 from app.services.event_processor import process_event as ep_process_event
+from app.services.event_processor import BUMP_THRESHOLD_G
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +105,6 @@ def verify_hmac(payload_str: str, signature: str) -> bool:
         return True
 
     try:
-        # [FIX-3] hmac.new() → hmac.new() (Python stdlib ไม่มี hmac.new)
         expected = hmac.new(
             settings.HMAC_SECRET.encode(),
             payload_str.encode(),
@@ -126,6 +143,71 @@ async def lookup_vehicle_id(
 
 
 # ──────────────────────────────────────────────────────────────
+# [FIX #2] Event detection config — ดึงจาก DB จริง, key ตรงกับ
+# event_processor.py เสมอ (single source of truth)
+# ──────────────────────────────────────────────────────────────
+
+# FDD v1.4 §12.3 defaults — ใช้เฉพาะตอนไม่มี active config ใน DB เลย
+_FALLBACK_EVENT_CONFIG: dict = {
+    "threshold_harsh_brake":   -0.40,   # FDD §10.4: ax < -0.4G
+    "threshold_harsh_accel":    0.40,   # FDD §10.4: ax > +0.4G
+    "threshold_harsh_corner":   0.40,   # FDD §10.4: |ay| > 0.4G
+    "threshold_bump":           BUMP_THRESHOLD_G,  # FDD §10.4: fixed 3G, not config-driven
+    "threshold_speed_kmh":     20.0,    # FDD §12.3: speeding_kmh_over default
+    "threshold_idle_min":       5.0,    # FDD §12.3: idle_min_threshold default
+}
+
+
+async def get_event_detection_config(pool: asyncpg.Pool) -> dict:
+    """
+    ดึง active scoring config จาก scoring_config_cache แล้ว map ชื่อ
+    column DB → key ที่ event_processor._detect_*() อ่านจริง
+
+    [FIX #2] ก่อนหน้านี้ค่า config เหล่านี้ถูก hardcode แยกไว้ในไฟล์นี้
+    ด้วยชื่อ key คนละชุดกับ event_processor.py ทำให้ config ไม่มีผลจริง
+    ตอนนี้ดึงจาก DB ตรงๆ และ map ชื่อ key ให้ตรงกันแบบ explicit
+    """
+
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT
+                harsh_brake_g, harsh_accel_g, harsh_corner_g,
+                speeding_kmh_over, idle_min_threshold
+            FROM scoring_config_cache
+            WHERE is_active = TRUE
+            LIMIT 1
+            """
+        )
+    except Exception as e:
+        logger.warning(f"[MQTT] Failed to load scoring config: {e} — using FDD defaults")
+        row = None
+
+    if not row:
+        return dict(_FALLBACK_EVENT_CONFIG)
+
+    # DB stores harsh_brake_g as a positive magnitude (FDD default 0.40);
+    # event_processor's brake threshold convention is negative (ax < -0.4G)
+    harsh_brake_g = row["harsh_brake_g"]
+
+    return {
+        "threshold_harsh_brake":
+            -abs(float(harsh_brake_g)) if harsh_brake_g is not None else -0.40,
+        "threshold_harsh_accel":
+            float(row["harsh_accel_g"]) if row["harsh_accel_g"] is not None else 0.40,
+        "threshold_harsh_corner":
+            float(row["harsh_corner_g"]) if row["harsh_corner_g"] is not None else 0.40,
+        # FDD §10.4: bump threshold is a fixed constant, not Admin-configurable
+        "threshold_bump":
+            BUMP_THRESHOLD_G,
+        "threshold_speed_kmh":
+            float(row["speeding_kmh_over"]) if row["speeding_kmh_over"] is not None else 20.0,
+        "threshold_idle_min":
+            float(row["idle_min_threshold"]) if row["idle_min_threshold"] is not None else 5.0,
+    }
+
+
+# ──────────────────────────────────────────────────────────────
 # Store Telemetry into telemetry_raw
 # ──────────────────────────────────────────────────────────────
 
@@ -134,25 +216,20 @@ async def store_telemetry(
     device_id: str,
     vehicle_id: Optional[int],  # ยังคง signature เดิม เพื่อไม่ให้ handle_telemetry() พัง
     payload: dict,
-    event: Optional[str] = None,
-    event_severity: Optional[float] = None,
 ) -> int:
     """
     Insert raw telemetry record into TimescaleDB hypertable.
     Returns the new record ID.
 
+    [FIX #1] `payload` ที่รับเข้ามาตอนนี้คือ payload ที่ผ่าน
+    ep_process_event() มาแล้ว (enriched) — ค่า event/event_severity
+    ที่ถูก insert คือค่าที่ server ตรวจสอบเอง ไม่ใช่ค่าดิบจาก ESP32
+
     หมายเหตุ schema: telemetry_raw ไม่มีคอลัมน์ vehicle_id และ created_at
     vehicle_id ถูก lookup แยก แต่ไม่ได้ store ใน raw table
     (join ผ่าน devices.vehicle_id ตอน query แทน)
-
-    [EVENT-STORE-FIX] event/event_severity รับเป็นพารามิเตอร์แยกจากผล
-    event_processor.process_event() แทนการอ่าน payload.get("event") ดิบ
-    เพื่อให้คอลัมน์ event ใน telemetry_raw เป็นผลการตรวจจับจริงของ Backend
-    ตาม FDD §11.1 ไม่ใช่ค่าที่ device อ้างเอง
     """
     # ── Normalize timestamp ──────────────────────────────────────
-    # รองรับทั้ง Unix epoch seconds (float/int), milliseconds, และ ISO string
-    # ESP32 บางตัวส่ง ms เช่น 1718500000000 แทน seconds 1718500000
     raw_ts = payload.get("ts")
     if raw_ts is None:
         ts_epoch = datetime.now(timezone.utc).timestamp()
@@ -165,13 +242,11 @@ async def store_telemetry(
         ts_epoch = float(raw_ts)
 
     # ถ้า ts ใหญ่เกิน 1e11 แสดงว่าเป็น milliseconds → หาร 1000
-    # threshold: 1e11 ms = ปี 1973 ซึ่งก่อน ESP32 จะมีอยู่มาก
     if ts_epoch > 1e11:
         ts_epoch = ts_epoch / 1000.0
         logger.debug(f"[MQTT] ts converted from ms to seconds: {ts_epoch}")
 
     # ตรวจ sanity: ถ้า ts ยังเป็น before 2020 → ใช้เวลาปัจจุบันแทน
-    # (ป้องกัน 1970 epoch จาก firmware ที่ยังไม่ sync GPS time)
     if ts_epoch < 1577836800:  # 2020-01-01 00:00:00 UTC
         logger.warning(
             f"[MQTT] ts={ts_epoch} ดูเหมือน GPS ยังไม่ sync เวลา "
@@ -180,7 +255,6 @@ async def store_telemetry(
         ts_epoch = datetime.now(timezone.utc).timestamp()
 
     # ── Normalize ignition ──────────────────────────────────────
-    # ESP32 อาจส่งมาเป็น 0/1 (int) หรือ true/false (bool)
     raw_ignition = payload.get("ignition")
     if isinstance(raw_ignition, int):
         ignition = bool(raw_ignition)
@@ -190,7 +264,6 @@ async def store_telemetry(
         ignition = raw_ignition
 
     # ── Normalize altitude ──────────────────────────────────────
-    # firmware อาจใช้ key "alt" หรือ "altitude"
     altitude = payload.get("altitude") or payload.get("alt")
 
     try:
@@ -242,8 +315,9 @@ async def store_telemetry(
             payload.get("gy"),
             payload.get("gz"),
             # ── $21-$23: Events + Ignition ───────────────────
-            event or None,
-            event_severity,
+            # [FIX #1] ค่านี้ตอนนี้มาจาก server-side detection แล้ว
+            payload.get("event") or None,
+            payload.get("event_severity"),
             ignition,
         )
 
@@ -252,70 +326,6 @@ async def store_telemetry(
     except Exception as e:
         logger.error(f"Error storing telemetry from {device_id}: {e}", exc_info=True)
         raise
-
-
-# ──────────────────────────────────────────────────────────────
-# Event detection config — ดึงจาก scoring_config_cache (FDD §11.2)
-# ──────────────────────────────────────────────────────────────
-
-# Fallback เมื่อยังไม่มี active config ใน DB
-# ใช้ค่า default เดียวกับ column DEFAULT ใน scoring_config_cache (FDD §11.2)
-# ยกเว้น threshold_harsh_brake ที่ต้องเป็นค่าติดลบตามทิศทางตรวจจับ (FDD §10.4)
-_FALLBACK_EVENT_CONFIG: dict = {
-    "threshold_harsh_brake":  -0.4,
-    "threshold_harsh_accel":   0.4,
-    "threshold_harsh_corner":  0.4,
-    "threshold_speed_kmh":    90.0,
-}
-
-
-async def get_active_event_config(pool: asyncpg.Pool) -> dict:
-    """
-    [EVENT-CONFIG-FIX]
-
-    ดึง threshold การตรวจจับ harsh event จาก scoring_config_cache ที่
-    is_active = TRUE (ค่าที่ Admin ตั้งผ่าน Odoo แล้ว push เข้ามา ตาม
-    FDD §11.2 / §12.3) แทนการใช้ dict คงที่ในโค้ด
-
-    Map ชื่อคอลัมน์ DB → key ที่ event_processor.py อ่าน:
-        harsh_brake_g    → threshold_harsh_brake   (แปลงเป็นค่าติดลบ
-                            เพราะ FDD §10.4 เช็ค ax < -0.4G)
-        harsh_accel_g    → threshold_harsh_accel   (ax > +0.4G)
-        harsh_corner_g   → threshold_harsh_corner  (|ay| > 0.4G)
-        speeding_kmh_over → threshold_speed_kmh
-    """
-
-    try:
-        row = await pool.fetchrow(
-            """
-            SELECT harsh_brake_g, harsh_accel_g, harsh_corner_g, speeding_kmh_over
-            FROM scoring_config_cache
-            WHERE is_active = TRUE
-            LIMIT 1
-            """
-        )
-    except Exception as e:
-        logger.warning(
-            f"[EVENT CONFIG] query scoring_config_cache failed — ใช้ fallback: {e}"
-        )
-        return dict(_FALLBACK_EVENT_CONFIG)
-
-    if not row:
-        logger.warning(
-            "[EVENT CONFIG] ไม่พบ active config ใน scoring_config_cache — ใช้ fallback"
-        )
-        return dict(_FALLBACK_EVENT_CONFIG)
-
-    return {
-        "threshold_harsh_brake":
-            -abs(float(row["harsh_brake_g"] or 0.4)),
-        "threshold_harsh_accel":
-            abs(float(row["harsh_accel_g"] or 0.4)),
-        "threshold_harsh_corner":
-            abs(float(row["harsh_corner_g"] or 0.4)),
-        "threshold_speed_kmh":
-            float(row["speeding_kmh_over"] or 90.0),
-    }
 
 
 # ──────────────────────────────────────────────────────────────
@@ -330,14 +340,17 @@ async def handle_telemetry(
     """
     Process one incoming MQTT telemetry message end-to-end.
 
-    Pipeline:
+    [FIX #1] Pipeline order changed:
     1. Lookup vehicle_id from device binding
-    2. Run event_processor.process_event (harsh event detection)
-       ด้วย threshold ที่ query จาก scoring_config_cache จริง
-       [EVENT-CONFIG-FIX / EVENT-STORE-FIX]
-    3. Store raw telemetry ใน telemetry_raw โดยใช้ event/event_severity
-       ที่ตรวจจับได้จาก Step 2 (ไม่ใช่ค่าดิบจาก device)
-    4. Pass to trip_manager.handle_telemetry (trip boundary detection)
+    2. Load active event-detection config from DB (FIX #2 — correct keys)
+    3. Run event_processor.process_event() → server-side harsh event
+       detection (FDD §10.4/§12.3, config-driven, Admin can retune
+       thresholds without redeploying firmware)
+    4. Merge the enriched event/event_severity into the payload
+    5. Store the ENRICHED telemetry in telemetry_raw (single write)
+    6. Pass to trip_manager.handle_telemetry (trip boundary detection),
+       which now reads the server-verified event from telemetry_raw
+       when it later queries the trip window
     """
     try:
         # ── Step 1: Lookup vehicle ──────────────────────────────
@@ -349,8 +362,6 @@ async def handle_telemetry(
                 f"telemetry จะถูก store แต่ trip/event processing จะถูกข้าม "
                 f"→ ให้เรียก PUT /api/v1/config/vehicle เพื่อผูก device กับรถก่อน"
             )
-            # Auto-register device ถ้ายังไม่มีใน DB
-            # (ป้องกัน error ตอน store เพราะ FK หรือ constraint)
             try:
                 await pool.execute(
                     """
@@ -363,28 +374,27 @@ async def handle_telemetry(
             except Exception as reg_err:
                 logger.warning(f"[TELEMETRY] Auto-register device failed: {reg_err}")
 
-        # ── Step 2: Event detection ก่อน store ──────────────────
-        # [EVENT-CONFIG-FIX] threshold มาจาก scoring_config_cache จริง
-        # [EVENT-STORE-FIX] ต้องคำนวณก่อน เพื่อให้ผลตรวจจับถูกบันทึกจริง
-        event_config = await get_active_event_config(pool)
+        # ── Step 2: Load event-detection config (FIX #2) ────────
+        event_config = await get_event_detection_config(pool)
 
+        # ── Step 3: Server-side event detection (FIX #1) ────────
+        # รันก่อน store เสมอ เพื่อให้ event ที่บันทึกเป็นค่าที่ server
+        # ตรวจสอบเอง (config-driven) ไม่ใช่ค่าที่ ESP32 ส่งมาดิบๆ
         enriched = ep_process_event(
             payload={**payload, "device_id": device_id},
             config=event_config,
         )
 
-        if enriched.get("event"):
-            logger.info(
-                f"[EVENT] device={device_id} "
-                f"event={enriched['event']} "
-                f"severity={enriched.get('event_severity'):.2f}"
-            )
+        # ── Step 4: Merge enriched event เข้า payload ────────────
+        payload_to_store = {
+            **payload,
+            "event": enriched.get("event") or "",
+            "event_severity": enriched.get("event_severity", 0.0),
+        }
 
-        # ── Step 3: Store raw telemetry (ใช้ event ที่ตรวจจับได้จริง) ─
+        # ── Step 5: Store ENRICHED telemetry (single write) ─────
         telemetry_id = await store_telemetry(
-            pool, device_id, vehicle_id, payload,
-            event=enriched.get("event") or None,
-            event_severity=enriched.get("event_severity"),
+            pool, device_id, vehicle_id, payload_to_store
         )
 
         logger.info(
@@ -392,12 +402,20 @@ async def handle_telemetry(
             f"device={device_id} bound_vehicle={vehicle_id} "
             f"lat={payload.get('lat')} lon={payload.get('lon')} "
             f"speed={payload.get('speed')} kmh "
-            f"ignition={payload.get('ignition')}"
+            f"ignition={payload.get('ignition')} "
+            f"event={payload_to_store['event'] or '-'}"
         )
 
-        # ── Step 4: Trip detection (requires vehicle binding) ───
+        if enriched.get("event"):
+            logger.info(
+                f"[EVENT] device={device_id} "
+                f"event={enriched['event']} "
+                f"severity={enriched.get('event_severity', 0.0):.2f}"
+            )
+
+        # ── Step 6: Trip detection (requires vehicle binding) ───
         if vehicle_id is not None:
-            payload_with_device = {**payload, "device_id": device_id}
+            payload_with_device = {**payload_to_store, "device_id": device_id}
             await trip_handle_telemetry(pool=pool, payload=payload_with_device)
 
     except Exception as e:
@@ -470,19 +488,15 @@ def on_message(client, userdata, msg):
     """
     Called by paho thread when a message arrives.
 
-    [FIX-1] ห้ามใช้ asyncio.create_task() ที่นี่ เพราะรันอยู่ใน paho thread
-    ซึ่งไม่มี running event loop ใน thread ของตัวเอง
-
+    [FIX-1, kept] ห้ามใช้ asyncio.create_task() ที่นี่ เพราะรันอยู่ใน
+    paho thread ซึ่งไม่มี running event loop ใน thread ของตัวเอง
     วิธีถูกต้อง: ใช้ asyncio.run_coroutine_threadsafe(coro, loop)
-    โดย _loop คือ event loop ของ FastAPI ที่บันทึกไว้ตอน startup
     """
-    # ── Guard: ต้องมี loop พร้อมก่อน ──────────────────────────
     if _loop is None or not _loop.is_running():
         logger.warning("[MQTT] Event loop not ready — message dropped")
         return
 
     try:
-        # ── Parse topic: kotchasaan/fleet/{device_id}/telemetry ─
         topic_parts = msg.topic.split("/")
         if len(topic_parts) >= 2:
             device_id = topic_parts[-2]   # ตำแหน่ง -2 = device_id
@@ -506,13 +520,11 @@ def on_message(client, userdata, msg):
             logger.warning(f"[MQTT] HMAC failed — device={device_id} message dropped")
             return
 
-        # ── [FIX-1] ส่ง coroutine ข้าม thread อย่างถูกต้อง ──
         future = asyncio.run_coroutine_threadsafe(
             _process_message_async(device_id, payload),
             _loop,
         )
 
-        # Log ถ้า coroutine โยน exception (non-blocking)
         def _on_done(fut):
             exc = fut.exception()
             if exc:
@@ -538,24 +550,15 @@ async def mqtt_subscriber_task() -> None:
     """
     Background task: เชื่อมต่อ MQTT broker และรับ message ตลอดเวลา.
     ถูกเรียกจาก FastAPI lifespan startup.
-
-    [FIX-2] เปลี่ยนจาก loop_forever() + executor
-            เป็น loop_start() (paho background thread)
-            แล้วใช้ asyncio.sleep() วน keep-alive
-
-    loop_forever() บน run_in_executor() จะบล็อก executor thread
-    และทำให้ asyncio.CancelledError ไม่สามารถ interrupt ได้อย่างถูกต้อง
     """
     global mqtt_client, connected, _loop
 
-    # [FIX-1] บันทึก event loop ก่อนเริ่ม — ใช้โดย on_message()
     _loop = asyncio.get_running_loop()
 
     retry_delay = 5
 
     while True:
         try:
-            # ── สร้าง MQTT client ใหม่ทุกครั้งที่ retry ──────
             mqtt_client = mqtt.Client(
                 client_id="fleet-telematics-backend",
                 protocol=mqtt.MQTTv311,
@@ -566,16 +569,11 @@ async def mqtt_subscriber_task() -> None:
             mqtt_client.on_disconnect = on_disconnect
             mqtt_client.on_message    = on_message
 
-            # ── Auth ────────────────────────────────────────────
             if settings.MQTT_USER and settings.MQTT_PASS:
                 mqtt_client.username_pw_set(
                     settings.MQTT_USER,
                     settings.MQTT_PASS,
                 )
-
-            # ── TLS (optional) ──────────────────────────────────
-            # ถ้า port 8883 ให้ uncomment:
-            # mqtt_client.tls_set()
 
             logger.info(
                 f"[MQTT] Connecting to {settings.MQTT_HOST}:{settings.MQTT_PORT} ..."
@@ -587,22 +585,17 @@ async def mqtt_subscriber_task() -> None:
                 keepalive=60,
             )
 
-            # [FIX-2] loop_start() รัน paho network loop ใน background thread
-            # ไม่บล็อก asyncio event loop — ต่างจาก loop_forever()
             mqtt_client.loop_start()
 
-            # ── Keep-alive: รอจนกว่าจะถูก cancel ─────────────
             while True:
                 await asyncio.sleep(5)
 
-                # ตรวจ connection health
                 if not connected:
                     logger.warning("[MQTT] Connection lost — reconnecting ...")
-                    break   # ออกจาก inner loop → ไป reconnect
+                    break
 
                 logger.debug(f"[MQTT] Heartbeat ✓  connected={connected}")
 
-            # Clean up ก่อน retry
             mqtt_client.loop_stop()
             try:
                 mqtt_client.disconnect()
@@ -620,7 +613,6 @@ async def mqtt_subscriber_task() -> None:
             break
 
         except OSError as e:
-            # TCP connection refused / network unreachable
             logger.error(
                 f"[MQTT] Network error: {e}. Retry in {retry_delay}s ..."
             )
@@ -633,7 +625,6 @@ async def mqtt_subscriber_task() -> None:
             )
             connected = False
 
-        # ── Exponential backoff retry ───────────────────────────
         try:
             await asyncio.sleep(retry_delay)
         except asyncio.CancelledError:

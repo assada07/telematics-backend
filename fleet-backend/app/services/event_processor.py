@@ -1,25 +1,47 @@
-# regionโค้ดอันเก่าที่แก้ขั้นตอนที่3
 # app/services/event_processor.py
+#
+# FDD v1.4 §10.4 Harsh Event Detection Algorithm — Pure Function
+#
+# [FIX LOG — this revision]
+#   [BUG-4 FIX, kept from previous patch]
+#     Axis mapping corrected to match FDD §10.4:
+#       Harsh Brake        : ax < -0.4G
+#       Harsh Acceleration : ax > +0.4G
+#       Harsh Cornering    : |ay| > 0.4G
+#
+#   [BUG-1 FIX, kept from previous patch]
+#     _calculate_severity() guard clause fixed from `threshold <= 0`
+#     to `threshold == 0`, since harsh_brake threshold is naturally
+#     negative (-0.4G) and the old guard zeroed out its severity always.
+#
+#   [NEW FIX #4 — Harsh Bump added]
+#     FDD §10.4 defines 6 event types: harsh_brake, harsh_acceleration,
+#     harsh_cornering, speeding, harsh_bump, idling.
+#     This file previously only implemented 5 — harsh_bump (az spike)
+#     was completely missing even though scoring_config_cache.bump_deduct
+#     already exists in the DB schema and is read by score_calculator.py.
+#
+#     Per FDD §10.4 table, the bump trigger condition is a FIXED constant
+#     (az > +3G or az < -3G) — it is NOT one of the Admin-configurable
+#     fields in fleet.telematics.scoring.config (§12.3 config field list
+#     only has harsh_brake_g / harsh_accel_g / harsh_corner_g /
+#     speeding_kmh_over / idle_min_threshold — no bump_g). Only the
+#     *weight* (bump_deduct) is configurable, not the trigger threshold.
+#     So BUMP_THRESHOLD_G below is intentionally a module constant,
+#     with an optional config override left available for testing.
 
-# def filter_imu_noise_event(ax: float, ay: float, az: float) -> dict:
-#     """
-#     วิเคราะห์และกรองสัญญาณรบกวน (Noise Filter) จากข้อมูล G-Force 
-#     ป้องกันความผิดพลาดจากสภาพถนนขรุขระ ก่อนนำไปคิดคะแนนความปลอดภัย
-#     """
-#     # เกณฑ์มาตรฐานสากลความปลอดภัยขนส่ง (G-Force Thresholds)
-#     HARSH_BRAKE_THRESHOLD = -0.4  # แรงเบรกแนวดิ่งเชิงลบ
-#     HARSH_ACCEL_THRESHOLD = 0.3   # แรงเร่งเครื่องยนต์กระชากไปข้างหน้า
-#     HARSH_CORNER_THRESHOLD = 0.5  # แรงเหวี่ยงสลัดซ้ายขวาขณะเข้าโค้ง
-    
-#     return {
-#         "is_harsh_braking": ay < HARSH_BRAKE_THRESHOLD,
-#         "is_harsh_acceleration": ay > HARSH_ACCEL_THRESHOLD,
-#         "is_harsh_cornering": abs(ax) > HARSH_CORNER_THRESHOLD
-#     }
-# endregion
-
-# app/services/event_processor.py
 from typing import Dict
+
+# FDD §10.4: "Harsh Bump: az > +3G หรือ < -3G" — fixed detection constant
+BUMP_THRESHOLD_G = 3.0
+
+# az resting baseline is ~1.0G (gravity) when stationary on a flat road.
+# The FDD formula in §10.4 computes severity as (|az| - 9.8) / 1G × 100
+# when az is expressed in m/s^2. This module works in G units (see
+# ay/ax handling elsewhere in this file), so we treat the "at rest"
+# baseline as 1.0G and measure deviation from it for severity, while
+# still using the raw ±3G trigger for detection as specified.
+BUMP_BASELINE_G = 1.0
 
 
 def filter_imu_noise_event(
@@ -30,10 +52,10 @@ def filter_imu_noise_event(
     """
     Backward compatibility
 
-    [BUG-4 FIX] แกนสลับผิดกับ FDD v1.4 §10.4 Harsh Event Detection Algorithm:
-      - Harsh Brake        : ax < -0.4G  (เดิมใช้ ay)
-      - Harsh Acceleration : ax > +0.4G  (เดิมใช้ ay)
-      - Harsh Cornering    : |ay| > 0.4G (เดิมใช้ ax)
+    Axis mapping matches FDD v1.4 §10.4:
+      - Harsh Brake        : ax < -0.4G
+      - Harsh Acceleration : ax > +0.4G
+      - Harsh Cornering    : |ay| > 0.4G
     """
 
     HARSH_BRAKE_THRESHOLD = -0.4
@@ -68,12 +90,9 @@ def _calculate_severity(
     """
     normalize severity ให้อยู่ช่วง 0-1
 
-    [BUG-1 FIX] เดิม guard clause คือ `if threshold <= 0: return 0.0`
-    ซึ่งผิด เพราะ threshold ของ harsh_brake เป็นค่าติดลบโดยธรรมชาติ
-    (เช่น -0.4G ตาม FDD §10.4: ax < -0.4G) ทำให้ severity ของ
-    harsh_brake เป็น 0.00 เสมอไม่ว่าค่า ax จะรุนแรงแค่ไหน
-    แก้เป็นเช็คแค่ threshold == 0 เพื่อป้องกันหารด้วยศูนย์เท่านั้น
-    ใช้ abs() ทั้งเศษและส่วน severity จึงถูกต้องทั้งกรณี threshold บวก/ลบ
+    [BUG-1 FIX] เช็คแค่ threshold == 0 (ป้องกันหารศูนย์เท่านั้น)
+    เพื่อให้ threshold ติดลบ (เช่น harsh_brake = -0.4G) ยังคำนวณ
+    severity ได้ถูกต้อง แทนที่จะเป็น 0.00 เสมอ
     """
 
     if threshold == 0:
@@ -90,7 +109,6 @@ def _detect_harsh_brake(
 ):
     """
     FDD v1.4 §10.4: Harsh Brake — ax < -0.4G (เบรคหัก)
-    [BUG-4 FIX] เดิมอ่าน ay ซึ่งผิดแกน แก้เป็น ax
     """
 
     ax = _safe_float(payload.get("ax"))
@@ -117,13 +135,12 @@ def _detect_harsh_acceleration(
 ):
     """
     FDD v1.4 §10.4: Harsh Acceleration — ax > +0.4G (เร่งกะทันหัน)
-    [BUG-4 FIX] เดิมอ่าน ay ซึ่งผิดแกน แก้เป็น ax
     """
 
     ax = _safe_float(payload.get("ax"))
 
     threshold = _safe_float(
-        config.get("threshold_harsh_accel", 0.3)
+        config.get("threshold_harsh_accel", 0.4)
     )
 
     if ax > threshold:
@@ -144,13 +161,12 @@ def _detect_harsh_cornering(
 ):
     """
     FDD v1.4 §10.4: Harsh Cornering — |ay| > 0.4G (เลี้ยวหักโค้ง)
-    [BUG-4 FIX] เดิมอ่าน ax ซึ่งผิดแกน แก้เป็น ay
     """
 
     ay = _safe_float(payload.get("ay"))
 
     threshold = _safe_float(
-        config.get("threshold_harsh_corner", 0.5)
+        config.get("threshold_harsh_corner", 0.4)
     )
 
     if abs(ay) > threshold:
@@ -161,6 +177,39 @@ def _detect_harsh_cornering(
         )
 
         return "harsh_cornering", severity
+
+    return "", 0.0
+
+
+def _detect_bump(
+        payload: dict,
+        config: dict
+):
+    """
+    FDD v1.4 §10.4: Harsh Bump — az > +3G หรือ az < -3G (ชนกระแทก)
+
+    [NEW — Fix #4]
+    Trigger threshold เป็นค่าคงที่ตาม FDD (ไม่ใช่ Admin-configurable
+    field ใน §12.3) แต่ยอมให้ override ผ่าน config["threshold_bump"]
+    ได้เพื่อความสะดวกในการทดสอบ — ถ้าไม่ส่งมาจะใช้ BUMP_THRESHOLD_G (3.0)
+    """
+
+    az = _safe_float(payload.get("az"))
+
+    threshold = _safe_float(
+        config.get("threshold_bump", BUMP_THRESHOLD_G)
+    )
+
+    if az > threshold or az < -threshold:
+
+        # severity อิงตามส่วนเกินจาก baseline แรงโน้มถ่วง (1G) ตาม
+        # แนวทาง §10.4: (|az| - baseline) / threshold_span × 100
+        severity = _calculate_severity(
+            abs(az) - BUMP_BASELINE_G,
+            threshold - BUMP_BASELINE_G,
+        )
+
+        return "bump", severity
 
     return "", 0.0
 
@@ -228,11 +277,18 @@ def _detect_idling(
     return "", 0.0
 
 
+# [FIX #4] เพิ่ม _detect_bump เข้า pipeline — ครบ 6 event ตาม FDD §10.4
+# ลำดับใน tuple มีผลต่อ "which event wins" ถ้าหลาย event ตรงเงื่อนไข
+# พร้อมกัน (process_event() คืนแค่ event แรกที่เจอ — break ทันที)
+# วาง bump ไว้หลัง harsh_brake/accel/corner เพราะ event เหล่านั้น
+# specific กว่า (แยกตามแกน ax/ay) ส่วน bump เป็น az/แรงกระแทกแนวดิ่ง
+# ซึ่งมักเกิดพร้อมสภาพถนน ไม่ใช่พฤติกรรมการขับ — ให้ priority ต่ำกว่า
 EVENT_HANDLERS = (
     _detect_harsh_brake,
     _detect_harsh_acceleration,
     _detect_harsh_cornering,
     _detect_speeding,
+    _detect_bump,
     _detect_idling
 )
 
