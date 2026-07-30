@@ -10,6 +10,9 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: self-hosted
     env:
+      # ใช้ config directory แยกของ CI เอง ไม่ใช้ ~/.docker ตัว default
+      # ที่ Docker Desktop คอยจัดการ/เขียนทับ credsStore กลับเป็น "desktop" อยู่เรื่อยๆ
+      DOCKER_CONFIG:            ${{ github.workspace }}/.docker-ci
       POSTGRES_DB:              ${{ secrets.POSTGRES_DB }}
       POSTGRES_USER:            ${{ secrets.POSTGRES_USER }}
       POSTGRES_PASSWORD:        ${{ secrets.POSTGRES_PASSWORD }}
@@ -24,13 +27,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # แก้ปัญหา: self-hosted macOS runner ใช้ macOS Keychain เป็น Docker credential store
-      # ทำให้ pull image พื้นฐาน (เช่น python:3.11-slim) ไม่ผ่านตอนรันแบบ non-interactive ใน CI
-      # การเขียน {} ทับ config.json จะลบ credsStore ออก ทำให้ Docker pull image สาธารณะแบบ anonymous ได้ตามปกติ
+      # แก้ปัญหา: self-hosted macOS runner ใช้ macOS Keychain เป็น Docker credential store (credsStore: "desktop")
+      # การแก้ ~/.docker/config.json ตรงๆ ไม่พอ เพราะ Docker Desktop ที่รันอยู่เบื้องหลังจะเขียนทับค่ากลับไปเป็น
+      # "desktop" อีกครั้ง จึงต้องชี้ DOCKER_CONFIG (ตั้งไว้ที่ job env ด้านบน) ไปที่โฟลเดอร์แยกที่ Desktop ไม่รู้จัก/ไม่ยุ่งด้วย
       - name: Fix Docker credential store on self-hosted macOS runner
         run: |
-          mkdir -p ~/.docker
-          echo '{}' > ~/.docker/config.json
+          mkdir -p "$DOCKER_CONFIG"
+          echo '{}' > "$DOCKER_CONFIG/config.json"
+
+      # ตรวจสอบทันทีว่าแก้ได้จริงก่อนจะไปรัน compose build (ล้มเร็ว เห็น error ชัดเจนถ้ายังไม่ผ่าน)
+      - name: Verify anonymous pull works
+        run: docker pull python:3.11-slim
 
       # สร้าง .env สำหรับ docker compose (root)
       - name: Create Global .env File
