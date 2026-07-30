@@ -78,13 +78,8 @@ jobs:
           docker volume create backend-log || true
 
       # Deploy — down ก่อนแล้ว up ใหม่ (ไม่ลบ volumes เพื่อรักษาข้อมูล)
+      # หมายเหตุ: เขียนคำสั่งจบในบรรทัดเดียว (ไม่ใช้ \ ต่อบรรทัด) เพื่อกัน CRLF ทำให้ continuation พังแบบที่เจอมาก่อน
       - name: Deploy Infrastructure and Backend
         run: |
-          docker compose \
-            -f docker-compose.yml \
-            -f docker-compose.backend.yml \
-            down --remove-orphans
-          docker compose \
-            -f docker-compose.yml \
-            -f docker-compose.backend.yml \
-            up -d --build --remove-orphans
+          docker compose -f docker-compose.yml -f docker-compose.backend.yml down --remove-orphans
+          docker compose -f docker-compose.yml -f docker-compose.backend.yml up -d --build --remove-orphans
