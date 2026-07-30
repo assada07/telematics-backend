@@ -86,6 +86,11 @@ jobs:
           docker volume create redis-data || true
           docker volume create backend-log || true
 
+      # เคลียร์ BuildKit cache ก่อน build ทุกครั้ง กัน snapshot ค้าง/เพี้ยนจากรอบก่อน
+      # (โดยเฉพาะช่วงที่ยังมี cd.yml วิ่งชนกับ deploy-local.yml บนเครื่องเดียวกัน)
+      - name: Prune Docker build cache before building
+        run: docker builder prune -af
+
       # Deploy — down ก่อนแล้ว up ใหม่ (ไม่ลบ volumes เพื่อรักษาข้อมูล)
       # หมายเหตุ: เขียนคำสั่งจบในบรรทัดเดียว (ไม่ใช้ \ ต่อบรรทัด) เพื่อกัน CRLF ทำให้ continuation พังแบบที่เจอมาก่อน
       - name: Deploy Infrastructure and Backend
