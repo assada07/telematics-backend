@@ -5,7 +5,6 @@ on:
     branches: [main, develop]
     types:
       - completed
-
 jobs:
   deploy:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
@@ -21,9 +20,17 @@ jobs:
       ODOO_ADMIN_PASSWORD:      ${{ secrets.ODOO_ADMIN_PASSWORD }}
       EMQX_DASHBOARD_PASSWORD:  ${{ secrets.EMQX_DASHBOARD_PASSWORD }}
       SECRET_KEY:               ${{ secrets.SECRET_KEY }}
-
+      HMAC_SECRET:              ${{ secrets.HMAC_SECRET }}
     steps:
       - uses: actions/checkout@v4
+
+      # แก้ปัญหา: self-hosted macOS runner ใช้ macOS Keychain เป็น Docker credential store
+      # ทำให้ pull image พื้นฐาน (เช่น python:3.11-slim) ไม่ผ่านตอนรันแบบ non-interactive ใน CI
+      # การเขียน {} ทับ config.json จะลบ credsStore ออก ทำให้ Docker pull image สาธารณะแบบ anonymous ได้ตามปกติ
+      - name: Fix Docker credential store on self-hosted macOS runner
+        run: |
+          mkdir -p ~/.docker
+          echo '{}' > ~/.docker/config.json
 
       # สร้าง .env สำหรับ docker compose (root)
       - name: Create Global .env File
@@ -49,7 +56,7 @@ jobs:
           echo "MQTT_PORT=1883" >> fleet-backend/.env
           echo "MQTT_TOPIC=#" >> fleet-backend/.env
           echo "SECRET_KEY=${{ secrets.SECRET_KEY }}" >> fleet-backend/.env
-          echo "HMAC_SECRET=fleet_hmac_secret_KTC001_2026" >> fleet-backend/.env
+          echo "HMAC_SECRET=${{ secrets.HMAC_SECRET }}" >> fleet-backend/.env
 
       # สร้าง networks และ volumes ถ้ายังไม่มี
       - name: Create Docker networks and volumes
