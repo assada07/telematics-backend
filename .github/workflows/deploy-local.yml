@@ -34,10 +34,19 @@ jobs:
         run: |
           mkdir -p "$DOCKER_CONFIG"
           echo '{}' > "$DOCKER_CONFIG/config.json"
+          # สำคัญ: ปลั๊กอิน "compose" ถูกค้นหาใน $DOCKER_CONFIG/cli-plugins ไม่ใช่แค่ ~/.docker
+          # ต้อง symlink โฟลเดอร์เดิมเข้ามา ไม่งั้น "docker compose" จะหา compose ไม่เจอ
+          # และ error ออกมาเป็น "unknown shorthand flag: 'f'" แทน
+          if [ -d "$HOME/.docker/cli-plugins" ]; then
+            ln -sf "$HOME/.docker/cli-plugins" "$DOCKER_CONFIG/cli-plugins"
+          fi
 
       # ตรวจสอบทันทีว่าแก้ได้จริงก่อนจะไปรัน compose build (ล้มเร็ว เห็น error ชัดเจนถ้ายังไม่ผ่าน)
       - name: Verify anonymous pull works
         run: docker pull python:3.11-slim
+
+      - name: Verify docker compose plugin is discoverable
+        run: docker compose version
 
       # สร้าง .env สำหรับ docker compose (root)
       - name: Create Global .env File
