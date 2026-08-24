@@ -1,6 +1,11 @@
 -- =============================================================
 -- Kotchasaan Fleet Telematics — Database Init Script
--- ตรงตาม FDD v1.4 Section 11.2
+-- ตรงตาม FDD v1.4 Section 11.2 + Developer Portal (1 user = 1 API key)
+--
+-- หมายเหตุ: ไฟล์นี้รันอัตโนมัติแค่ "ครั้งเดียว" ตอน Postgres volume
+-- ถูกสร้างใหม่เท่านั้น (ผ่าน docker-entrypoint-initdb.d) ถ้า volume
+-- มีอยู่แล้ว ไฟล์นี้จะไม่ถูกรันซ้ำ — สำหรับ DB ที่มีอยู่แล้วให้ใช้
+-- migration_one_key_per_user.sql แทน (ดูที่ fleet-backend/ root)
 -- =============================================================
 
 -- TimescaleDB Extension (ต้องทำก่อน CREATE TABLE ทุกตัว)
@@ -41,7 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_devices_active
 
 CREATE TABLE IF NOT EXISTS update_status (
     vehicle_id          INTEGER         NOT NULL,
-    device_id           VARCHAR(20)     NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    device_id            VARCHAR(20)     NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     driver_id           INTEGER,                        -- FK → Odoo hr.employee.id
     date_update_latest  TIMESTAMPTZ     DEFAULT NOW(),
 
@@ -59,7 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_update_status_vehicle
     ON update_status (vehicle_id);
 
 -- =============================================================
--- 3. USERS  (สำหรับ JWT Authentication)
+-- 3. USERS  (สำหรับ JWT Authentication + Developer Portal login)
 -- =============================================================
 
 CREATE TABLE IF NOT EXISTS users (
@@ -78,18 +83,46 @@ CREATE INDEX IF NOT EXISTS idx_users_email    ON users (email);
 
 -- =============================================================
 -- 4. API_KEYS  (สำหรับ API Key Authentication)
+--
+-- [Developer Portal] 1 user = 1 active API key (FDD v1.4 §13)
+--   - user_id          : เจ้าของ key (FK → users.id)
+--   - key_prefix        : ส่วนหน้าของ key ที่ไม่เป็นความลับ ใช้แสดง
+--                         แบบ masked ในหน้า portal เท่านั้น (เช่น
+--                         "ktc_ab12cdef****")
+--   - key_hash          : SHA-256 hash ของ plaintext key เท่านั้น
+--                         (ไม่เคยเก็บ plaintext ลง DB)
+--   - last_rotated_at   : เวลาที่ regenerate ครั้งล่าสุด
+--   - revoked_at        : เวลาที่ปิดใช้งาน (ถ้ามี) — เก็บไว้เพื่อ audit
+--                         log ไม่ลบแถวทิ้งเมื่อ revoke/regenerate
+--
+--   Unique partial index ด้านล่างบังคับว่า 1 user มี key ที่
+--   is_active = TRUE ได้สูงสุด 1 อันเท่านั้น ณ เวลาใดเวลาหนึ่ง
 -- =============================================================
 
 CREATE TABLE IF NOT EXISTS api_keys (
-    id          SERIAL          PRIMARY KEY,
-    key_hash    VARCHAR(255)    UNIQUE NOT NULL,
-    name        VARCHAR(100),
-    created_by  INTEGER         REFERENCES users(id) ON DELETE SET NULL,
-    is_active   BOOLEAN         DEFAULT true,
-    created_at  TIMESTAMPTZ     DEFAULT NOW(),
-    last_used   TIMESTAMPTZ,
-    scope       VARCHAR(20)     DEFAULT 'general'
+    id                SERIAL          PRIMARY KEY,
+    key_hash          VARCHAR(255)    UNIQUE NOT NULL,
+    name              VARCHAR(100),
+    created_by        INTEGER         REFERENCES users(id) ON DELETE SET NULL,
+    is_active         BOOLEAN         DEFAULT true,
+    created_at        TIMESTAMPTZ     DEFAULT NOW(),
+    last_used         TIMESTAMPTZ,
+    scope             VARCHAR(20)     DEFAULT 'general',
+
+    -- [Developer Portal] 1 user = 1 active API key
+    user_id           INTEGER         REFERENCES users(id) ON DELETE CASCADE,
+    key_prefix        VARCHAR(20),
+    last_rotated_at   TIMESTAMPTZ,
+    revoked_at        TIMESTAMPTZ
 );
+
+-- 1 user มี key ที่ is_active = TRUE ได้แค่ 1 อันเท่านั้น
+CREATE UNIQUE INDEX IF NOT EXISTS uq_api_keys_one_active_per_user
+    ON api_keys (user_id)
+    WHERE is_active = TRUE;
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_user_id
+    ON api_keys (user_id);
 
 -- =============================================================
 -- 5. TELEMETRY_RAW  (Hypertable — partition by ts)

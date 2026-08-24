@@ -36,6 +36,9 @@ from app.api import routes_reports
 
 from app.auth.routes import router as auth_router
 
+# [NEW] Developer portal — "1 user = 1 API key" self-service (FDD v1.4 §13)
+from app.developer.routes import router as developer_router
+
 # ──────────────────────────────────────────────
 # Windows Compatibility
 # ──────────────────────────────────────────────
@@ -307,6 +310,12 @@ app = FastAPI(
 - Fleet Summary
 - Fuel Efficiency
 - Maintenance Forecast
+
+---
+
+## Developer Portal APIs
+
+Self-service API key management สำหรับผู้ใช้แต่ละคน (1 user = 1 key)
 """
 )
 
@@ -343,6 +352,13 @@ except Exception:
 async def api_tester():
     return FileResponse("static/fleet_api_tester.html")
 
+
+# [NEW] Developer Portal — self-service API key management UI
+# แยกเส้นทางจาก /docs (Swagger UI) โดยเจตนา
+@app.get("/portal", include_in_schema=False)
+async def developer_portal():
+    return FileResponse("static/developer_portal.html")
+
 # ──────────────────────────────────────────────
 # Routers
 # ──────────────────────────────────────────────
@@ -354,6 +370,9 @@ app.include_router(routes_drivers.router)
 app.include_router(routes_config.router)
 app.include_router(routes_reports.router)
 app.include_router(auth_router)
+
+# [NEW] Developer portal routes (GET/POST /developer/me/api-key/...)
+app.include_router(developer_router)
 
 # ──────────────────────────────────────────────
 # Root Endpoint
@@ -370,5 +389,6 @@ async def root():
         "compliance": "FDD v1.4 Full",
         "version": "2.0.0",
         "tester_ui": "/tester",
+        "developer_portal": "/portal",
         "docs": "/docs",
     }

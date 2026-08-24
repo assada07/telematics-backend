@@ -2,8 +2,8 @@ import jwt
 import bcrypt
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from fastapi import Depends, HTTPException, Request, Security, status
-from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
+from fastapi import Depends, Header, HTTPException, Request, Security, status
+from fastapi.security import APIKeyHeader
 
 from app.config import settings
 from app.auth.models import get_api_key, get_user_by_id, update_key_last_used
@@ -14,8 +14,19 @@ JWT_ALGORITHM   = "HS256"
 JWT_EXPIRE_MIN  = 60 * 8
 
 api_key_header = APIKeyHeader(name="APIKEY", auto_error=False)
-oauth2_scheme  = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
+# [แก้ไข] เดิมใช้ OAuth2PasswordBearer(tokenUrl="/auth/login") เป็น
+# dependency ของ get_current_user_jwt() — คลาสนี้สืบทอดจาก SecurityBase
+# ทำให้ FastAPI auto-register เป็น security scheme ("OAuth2, password")
+# แล้วโผล่ปุ่ม Authorize ใน Swagger /docs โดยอัตโนมัติ
+#
+# ทีมไม่ได้ใช้ flow login ผ่าน Swagger แล้ว (ย้ายไปใช้ portal.html ที่ยิง
+# /auth/login เอง แล้วแนบ JWT ใน header ของทุก request ต่อจากนั้น) จึง
+# ตัดปุ่มนี้ออกโดยเปลี่ยนมาอ่าน Authorization header ตรงๆ ด้วย
+# fastapi.Header (ธรรมดา ไม่ใช่ SecurityBase) — ไม่ถูก FastAPI ทำเป็น
+# security scheme จึงไม่มีปุ่ม Authorize (OAuth2, password) ใน Swagger
+# อีกต่อไป แต่ endpoint ที่ต้อง login ยังคงตรวจ JWT จาก header
+# "Authorization: Bearer <token>" ได้ปกติทุกจุดเหมือนเดิม
 RATE_LIMIT_DEFAULT_LIMIT: int = 60
 RATE_LIMIT_DEFAULT_WINDOW_SECONDS: int = 60
 
@@ -47,7 +58,27 @@ def decode_access_token(token: str) -> Optional[dict]:
         raise HTTPException(status_code=401, detail="Token ไม่ถูกต้อง")
 
 
-async def get_current_user_jwt(token: str = Depends(oauth2_scheme)):
+def _extract_bearer_token(
+    authorization: Optional[str] = Header(default=None)
+) -> Optional[str]:
+    """
+    อ่าน JWT จาก header "Authorization: Bearer <token>" ตรงๆ ด้วย
+    fastapi.Header (ไม่ใช่ SecurityBase subclass เหมือน
+    OAuth2PasswordBearer เดิม) จึงไม่ถูก FastAPI เอาไปสร้างเป็น
+    security scheme ใน OpenAPI schema — ผลคือไม่มีปุ่ม Authorize
+    (OAuth2, password) โผล่ในหน้า Swagger /docs อีกต่อไป
+    """
+    if not authorization:
+        return None
+
+    parts = authorization.split()
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1]
+
+    return None
+
+
+async def get_current_user_jwt(token: Optional[str] = Depends(_extract_bearer_token)):
     if not token:
         raise HTTPException(status_code=401, detail="กรุณา Login ก่อน")
     payload = decode_access_token(token)
